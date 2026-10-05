@@ -40,16 +40,28 @@ def test_example_graph_evaluates_to_images(tree):
         assert px.std() > 0.01
     assert images["BASE_COLOR"].colorspace_settings.name == "Linear Rec.709"
     assert images["NORMAL"].colorspace_settings.name == "Non-Color"
-    assert tree.status_backend == "CPU"  # GPU is unavailable in background mode
-    assert "GPU unavailable" in tree.status_error
+    st = evaluate.status(tree)
+    assert st["backend"] == "CPU"  # GPU is unavailable in background mode
+    assert "GPU unavailable" in st["error"]
 
 
 def test_param_change_reruns_only_downstream(tree):
     evaluate.evaluate_tree(tree)
-    assert tree.status_nodes == len([n for n in tree.nodes])
+    st = evaluate.status(tree)
+    assert st["nodes"] == len(tree.nodes)
+    assert st["images"] == 4
     tree.nodes["Normal"].intensity = 5.0
     evaluate.evaluate_tree(tree)
-    assert tree.status_nodes == 2  # Normal and its Output
+    assert st["nodes"] == 2  # Normal and its Output
+    assert st["images"] == 1  # only the Normal image is rewritten
+    evaluate.evaluate_tree(tree)
+    assert st["nodes"] == 0 and st["images"] == 0
+
+
+def test_evaluation_does_not_reschedule_itself(tree):
+    evaluate._pending.clear()
+    evaluate.evaluate_tree(tree)
+    assert not evaluate._pending
 
 
 def test_resolution_change_resizes_images(tree):

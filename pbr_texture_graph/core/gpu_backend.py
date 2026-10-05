@@ -23,6 +23,7 @@ def set_uniform(setter, name, value):
 
 class GPUBackend:
     name = "GPU"
+    slow_readback = False
 
     def __init__(self):
         self._shaders = {}
@@ -86,6 +87,7 @@ class GPUBackend:
         try:
             arr = np.frombuffer(data, dtype=np.float32)
         except (TypeError, ValueError, BufferError):
+            self.slow_readback = True
             arr = np.array(data.to_list(), dtype=np.float32)
         return arr.reshape(h, w, 4).copy()
 

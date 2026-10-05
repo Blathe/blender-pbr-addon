@@ -1,7 +1,7 @@
 """The Texture Graph node tree, its sockets and nodes."""
 
 import bpy
-from bpy.props import BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty, IntProperty, PointerProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty, IntProperty, PointerProperty
 from bpy.types import Node, NodeSocket, NodeTree
 
 from .core.ops import OPS
@@ -38,10 +38,6 @@ class PTGTextureGraph(NodeTree):
     )
     auto_update: BoolProperty(name="Auto Update", default=True, description="Re-evaluate whenever the graph changes")
     material: PointerProperty(name="Material", type=bpy.types.Material)
-    status_backend: StringProperty()
-    status_ms: FloatProperty()
-    status_nodes: IntProperty()
-    status_error: StringProperty()
 
     def update(self):
         from . import evaluate

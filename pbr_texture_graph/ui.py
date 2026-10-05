@@ -1,6 +1,7 @@
 from bpy.types import Panel
 from nodeitems_utils import NodeCategory, NodeItem, register_node_categories, unregister_node_categories
 
+from . import evaluate
 from .nodes import TREE_ID
 
 
@@ -33,12 +34,17 @@ class PTG_PT_graph(Panel):
         if tree.material:
             layout.label(text=f"Material: {tree.material.name}", icon="MATERIAL")
 
+        st = evaluate.status(tree)
         box = layout.box()
-        if tree.status_backend:
-            box.label(text=f"Last update: {tree.status_ms:.1f} ms on {tree.status_backend}")
-            box.label(text=f"Nodes re-run: {tree.status_nodes}")
-        if tree.status_error:
-            for i, line in enumerate(_wrap(tree.status_error, 40)):
+        if st["backend"]:
+            box.label(text=f"Last update: {st['total_ms']:.1f} ms on {st['backend']}")
+            col = box.column(align=True)
+            col.scale_y = 0.8
+            col.label(text=f"Graph: {st['graph_ms']:.1f} ms, {st['nodes']} nodes re-run")
+            col.label(text=f"Readback: {st['readback_ms']:.1f} ms, write: {st['write_ms']:.1f} ms")
+            col.label(text=f"Images updated: {st['images']}, updates/sec: {len(st['recent'])}")
+        if st["error"]:
+            for i, line in enumerate(_wrap(st["error"], 40)):
                 box.label(text=line, icon="ERROR" if i == 0 else "BLANK1")
         layout.operator("ptg.new_example", icon="ADD")
 

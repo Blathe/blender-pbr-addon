@@ -17,6 +17,18 @@ PREVIEW_IMAGE = "Texture Graph Preview"
 # tree name -> (Evaluator, status note, requested backend)
 _evaluators = {}
 _pending = set()
+# tree name -> status dict shown in the sidebar. Kept out of RNA on purpose:
+# writing tree properties from an evaluation can trigger another tree update.
+_status = {}
+# True while an evaluation runs; updates it causes are ignored.
+_busy = False
+
+
+def status(tree):
+    return _status.setdefault(tree.name, {
+        "backend": "", "error": "", "nodes": 0, "total_ms": 0.0, "graph_ms": 0.0,
+        "readback_ms": 0.0, "write_ms": 0.0, "images": 0, "recent": [],
+    })
 
 
 def _make_evaluator(tree):
@@ -47,6 +59,7 @@ def clear_all():
             pass
     _evaluators.clear()
     _pending.clear()
+    _status.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -54,7 +67,7 @@ def clear_all():
 # runs from a short timer instead of inside the update callback.
 
 def schedule(tree):
-    if tree is None or getattr(tree, "bl_idname", "") != TREE_ID or not tree.auto_update:
+    if _busy or tree is None or getattr(tree, "bl_idname", "") != TREE_ID or not tree.auto_update:
         return
     _pending.add(tree.name)
     if not bpy.app.timers.is_registered(_run_pending):
@@ -156,32 +169,63 @@ def _run(tree, targets, size):
         return cpu, cpu.evaluate(specs, targets, size), note
 
 
-def evaluate_tree(tree):
-    """Evaluate every Output node and write one image per channel.
+def evaluate_tree(tree, force=False):
+    """Evaluate every Output node and write one image per channel. Only
+    outputs whose result changed are copied into their image unless force.
     Returns {channel: image}."""
+    global _busy
+    st = status(tree)
     start = time.perf_counter()
     size = (int(tree.resolution), int(tree.resolution))
-    _, outputs = extract_graph(tree)
     images = {}
+    _busy = True
     try:
+        _, outputs = extract_graph(tree)
         ev, results, note = _run(tree, [o.name for o in outputs], size)
+        graph_done = time.perf_counter()
+        readback = write = 0.0
+        written = 0
         for node in outputs:
             buf, _ = results[node.name]
-            colorspace = "Linear Rec.709" if node.channel in LINEAR_CHANNELS else "Non-Color"
-            images[node.channel] = write_image(image_name(tree, node.channel), ev.backend.to_numpy(buf), colorspace)
-        tree.status_backend = ev.backend.name
-        tree.status_nodes = len(ev.ran)
-        tree.status_error = note
+            name = image_name(tree, node.channel)
+            img = bpy.data.images.get(name)
+            if force or node.name in ev.ran or img is None or tuple(img.size) != size:
+                t0 = time.perf_counter()
+                pixels = ev.backend.to_numpy(buf)
+                t1 = time.perf_counter()
+                colorspace = "Linear Rec.709" if node.channel in LINEAR_CHANNELS else "Non-Color"
+                img = write_image(name, pixels, colorspace)
+                readback += t1 - t0
+                write += time.perf_counter() - t1
+                written += 1
+            images[node.channel] = img
+        st.update(backend=ev.backend.name, nodes=len(ev.ran), error=note, images=written,
+                  graph_ms=(graph_done - start) * 1000.0, readback_ms=readback * 1000.0, write_ms=write * 1000.0)
+        if getattr(ev.backend, "slow_readback", False):
+            st["error"] = (note + " " if note else "") + "Slow GPU readback path in use."
     except Exception as exc:
         traceback.print_exc()
-        tree.status_error = str(exc)
-    tree.status_ms = (time.perf_counter() - start) * 1000.0
+        st["error"] = str(exc)
+    finally:
+        _busy = False
+    now = time.perf_counter()
+    st["total_ms"] = (now - start) * 1000.0
+    st["recent"] = [t for t in st["recent"] if now - t < 1.0] + [now]
     _redraw()
     return images
 
 
 def preview_node(tree, node):
     """Evaluate one node and write it to the preview image."""
+    global _busy
+    _busy = True
+    try:
+        return _preview_node(tree, node)
+    finally:
+        _busy = False
+
+
+def _preview_node(tree, node):
     size = (int(tree.resolution), int(tree.resolution))
     ev, results, note = _run(tree, [node.name], size)
     buf, kind = results[node.name]
@@ -189,7 +233,7 @@ def preview_node(tree, node):
     if isinstance(node, PTGNodeOutput):
         colorspace = "Linear Rec.709" if node.channel in LINEAR_CHANNELS else "Non-Color"
     img = write_image(PREVIEW_IMAGE, ev.backend.to_numpy(buf), colorspace)
-    tree.status_error = note
+    status(tree)["error"] = note
     _redraw()
     return img
 
