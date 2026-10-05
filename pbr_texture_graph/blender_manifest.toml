@@ -1,0 +1,14 @@
+schema_version = "1.0.0"
+
+id = "pbr_texture_graph"
+version = "0.1.0"
+name = "PBR Texture Graph"
+tagline = "Node-based PBR texture generator for stylized materials"
+maintainer = "Blathe"
+type = "add-on"
+website = "https://github.com/Blathe/blender-pbr-addon"
+tags = ["Material", "Node"]
+
+blender_version_min = "4.2.0"
+
+license = ["SPDX:GPL-3.0-or-later"]
