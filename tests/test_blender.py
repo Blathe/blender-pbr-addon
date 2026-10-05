@@ -90,3 +90,18 @@ def test_preview_node(tree):
     img = evaluate.preview_node(tree, tree.nodes["Perlin Noise"])
     assert img.name == evaluate.PREVIEW_IMAGE
     assert tuple(img.size) == (256, 256)
+
+
+def test_set_uniform_skips_optimized_out_uniforms():
+    from pbr_texture_graph.core.gpu_backend import set_uniform
+
+    def missing(name, value):
+        raise ValueError(f"GPUShader.uniform_int: uniform {name} not found")
+
+    set_uniform(missing, "ptg_size", (1, 1))  # does not raise
+
+    def broken(name, value):
+        raise TypeError("expected a sequence")
+
+    with pytest.raises(TypeError):
+        set_uniform(broken, "ptg_size", (1, 1))

@@ -11,6 +11,16 @@ from .ops import GLSL_COMMON
 _TYPES = {"float": "FLOAT", "int": "INT", "color": "VEC4"}
 
 
+def set_uniform(setter, name, value):
+    """Set a uniform, skipping ones the GLSL compiler optimized out because
+    the op never reads them (Blender raises "uniform ... not found")."""
+    try:
+        setter(name, value)
+    except Exception as exc:
+        if "not found" not in str(exc):
+            raise
+
+
 class GPUBackend:
     name = "GPU"
 
@@ -51,19 +61,19 @@ class GPUBackend:
             old_blend = gpu.state.blend_get()
             gpu.state.blend_set("NONE")
             shader.bind()
-            shader.uniform_int("ptg_size", (w, h))
+            set_uniform(shader.uniform_int, "ptg_size", (w, h))
             for name in op.inputs:
                 src = inputs.get(name)
-                shader.uniform_int(f"has_{name}", 1 if src is not None else 0)
-                shader.uniform_sampler(f"in_{name}", src.texture_color if src is not None else self._dummy)
+                set_uniform(shader.uniform_int, f"has_{name}", 1 if src is not None else 0)
+                set_uniform(shader.uniform_sampler, f"in_{name}", src.texture_color if src is not None else self._dummy)
             for p in op.params:
                 value = params[p.name]
                 if p.kind == "float":
-                    shader.uniform_float(f"p_{p.name}", float(value))
+                    set_uniform(shader.uniform_float, f"p_{p.name}", float(value))
                 elif p.kind == "int":
-                    shader.uniform_int(f"p_{p.name}", int(value))
+                    set_uniform(shader.uniform_int, f"p_{p.name}", int(value))
                 else:
-                    shader.uniform_float(f"p_{p.name}", tuple(float(v) for v in value))
+                    set_uniform(shader.uniform_float, f"p_{p.name}", tuple(float(v) for v in value))
             batch.draw(shader)
             gpu.state.blend_set(old_blend)
         return off
