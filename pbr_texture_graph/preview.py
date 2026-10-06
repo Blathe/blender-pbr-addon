@@ -117,22 +117,6 @@ def build_mesh(name, shape):
     return mesh
 
 
-def material_for(tree):
-    """The sphere uses the projected material; every other shape has
-    seamless UVs and uses the graph's main material."""
-    if tree.preview_shape != "SPHERE" or tree.material is None:
-        return tree.material
-    from . import evaluate
-    from .material import build_triplanar_material
-
-    images = {}
-    for node in evaluate.extract_graph(tree)[1]:
-        image = bpy.data.images.get(evaluate.image_name(tree, node.channel))
-        if image is not None:
-            images.setdefault(node.channel, image)
-    return build_triplanar_material(tree, images)
-
-
 def preview_object(tree, scene):
     """Create the preview object for tree, or refresh its mesh. Returns it."""
     obj = tree.preview_object
@@ -155,9 +139,8 @@ def rebuild_shape(tree):
     if obj is None:
         return
     mesh = build_mesh(f"{tree.name} Preview", tree.preview_shape)
-    mat = material_for(tree)
-    if mat is not None:
-        mesh.materials.append(mat)
+    if tree.material is not None:
+        mesh.materials.append(tree.material)
     old = obj.data
     obj.data = mesh
     if old is not None and old.users == 0:
