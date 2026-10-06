@@ -1,7 +1,8 @@
 """The Texture Graph node tree, its sockets and nodes."""
 
 import bpy
-from bpy.props import BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty, IntProperty, PointerProperty
+from bpy.props import (BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty, IntProperty, PointerProperty,
+                       StringProperty)
 from bpy.types import Node, NodeSocket, NodeTree
 
 from .core.ops import OPS
@@ -17,6 +18,12 @@ def _changed(self, context):
 # ---------------------------------------------------------------------------
 # Tree
 
+EXPORT_PRESETS = [
+    ("SEPARATE", "Separate Maps", "One file per map, OpenGL normals"),
+    ("GLTF", "glTF / Godot", "Occlusion, roughness, metallic packed in one ORM file; OpenGL normals"),
+    ("UNREAL", "Unreal Engine", "ORM packed file; DirectX normals"),
+    ("UNITY", "Unity", "Metallic with smoothness in alpha; OpenGL normals"),
+]
 RESOLUTIONS = [(str(s), f"{s} px", f"{s} x {s} pixels") for s in (256, 512, 1024, 2048, 4096)]
 
 
@@ -47,6 +54,29 @@ class PTGTextureGraph(NodeTree):
                                   description="Show a preview of each node's result")
     auto_update: BoolProperty(name="Auto Update", default=True, description="Re-evaluate whenever the graph changes")
     material: PointerProperty(name="Material", type=bpy.types.Material)
+
+    # Export settings, remembered per graph. No update callbacks: changing
+    # them must not re-evaluate the graph.
+    export_directory: StringProperty(name="Folder", subtype="DIR_PATH", default="//textures/",
+                                     options={"PATH_SUPPORTS_BLEND_RELATIVE"},
+                                     description="Where texture files are written (// is the .blend file's folder)")
+    export_preset: EnumProperty(name="Preset", items=EXPORT_PRESETS, default="GLTF")
+    export_format: EnumProperty(
+        name="Format",
+        items=[
+            ("PNG8", "PNG 8-bit", "Smallest files; height maps still use 16 bits"),
+            ("PNG16", "PNG 16-bit", "Higher precision PNG"),
+            ("EXR", "OpenEXR", "32-bit float, linear"),
+        ],
+        default="PNG8",
+    )
+    export_resolution: EnumProperty(
+        name="Size",
+        items=[("GRAPH", "Graph Resolution", "Use the graph's resolution")] + RESOLUTIONS,
+        default="GRAPH",
+    )
+    export_template: StringProperty(name="File Name", default="{name}_{map}",
+                                    description="{name} is the graph name, {map} the map type")
 
     def update(self):
         from . import evaluate

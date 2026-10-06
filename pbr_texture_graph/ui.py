@@ -36,6 +36,21 @@ class PTG_PT_graph(Panel):
         if tree.material:
             layout.label(text=f"Material: {tree.material.name}", icon="MATERIAL")
 
+        box = layout.box()
+        box.label(text="Export", icon="EXPORT")
+        col = box.column()
+        col.prop(tree, "export_preset")
+        col.prop(tree, "export_format")
+        col.prop(tree, "export_resolution")
+        col.prop(tree, "export_directory")
+        col.prop(tree, "export_template")
+        if tree.export_preset == "UNREAL":
+            sub = col.column(align=True)
+            sub.scale_y = 0.8
+            sub.label(text="Keep Normal nodes on OpenGL;", icon="INFO")
+            sub.label(text="the preset converts to DirectX.", icon="BLANK1")
+        box.operator("ptg.export_textures", icon="EXPORT")
+
         st = evaluate.status(tree)
         box = layout.box()
         if st["backend"]:

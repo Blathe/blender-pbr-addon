@@ -17,6 +17,19 @@ Status: Phase 2 (MVP) in progress. Targets Blender 4.5 LTS (works on 4.2+).
 4. Tweak any node; the material updates live. The sidebar shows how long the last update took and whether it ran on the GPU or CPU.
 5. Every node shows a thumbnail of its result (toggle with **Thumbnails** in the sidebar). Select a node and click **View Active Node** to see it full size in an Image Editor.
 
+## Export
+
+The sidebar's **Export** box writes the graph's maps as texture files. Pick a preset:
+
+| Preset | Files | Normal map |
+| --- | --- | --- |
+| Separate Maps | One file per Output channel | OpenGL |
+| glTF / Godot | Base Color, Normal, Height, and ORM (R = AO, G = Roughness, B = Metallic) | OpenGL |
+| Unreal Engine | Same as glTF with ORM packing | DirectX (green flipped) |
+| Unity | Base Color, Normal, Height, AO, and MetallicSmoothness (RGB = Metallic, A = 1 - Roughness) | OpenGL |
+
+Formats are PNG 8-bit (height maps still use 16 bits), PNG 16-bit, or 32-bit OpenEXR. Color maps are sRGB in PNG and linear in EXR; everything else is linear data. Missing channels in packed files get neutral defaults (AO 1, Roughness 0.5, Metallic 0). Keep Normal nodes on OpenGL, since the Unreal preset converts. The file name template accepts `{name}` (graph name) and `{map}` (map type), and `//` in the folder means the .blend file's folder.
+
 ## Nodes
 
 | Node | What it does |

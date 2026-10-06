@@ -73,6 +73,36 @@ class PTG_OT_view_node(Operator):
         return {"FINISHED"}
 
 
+class PTG_OT_export_textures(Operator):
+    """Write this graph's maps to texture files using the chosen engine preset"""
+    bl_idname = "ptg.export_textures"
+    bl_label = "Export Textures"
+
+    @classmethod
+    def poll(cls, context):
+        return _edit_tree(context) is not None
+
+    def execute(self, context):
+        from .export_blender import export_tree
+
+        tree = _edit_tree(context)
+        directory = tree.export_directory
+        if directory.startswith("//") and not bpy.data.filepath:
+            self.report({"ERROR"}, "Save the .blend file first, or choose an absolute export folder")
+            return {"CANCELLED"}
+        side = int(tree.resolution if tree.export_resolution == "GRAPH" else tree.export_resolution)
+        try:
+            paths = export_tree(tree, directory, tree.export_preset, tree.export_format, side, tree.export_template)
+        except Exception as exc:
+            self.report({"ERROR"}, f"Export failed: {exc}")
+            return {"CANCELLED"}
+        if not paths:
+            self.report({"WARNING"}, "Add an Output node first")
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"Exported {len(paths)} files to {bpy.path.abspath(directory)}")
+        return {"FINISHED"}
+
+
 def build_example(tree):
     """A stylized stone-tile graph that exercises most nodes."""
     nodes, links = tree.nodes, tree.links
@@ -128,4 +158,4 @@ class PTG_OT_new_example(Operator):
         return {"FINISHED"}
 
 
-classes = (PTG_OT_update, PTG_OT_create_material, PTG_OT_view_node, PTG_OT_new_example)
+classes = (PTG_OT_update, PTG_OT_create_material, PTG_OT_view_node, PTG_OT_export_textures, PTG_OT_new_example)
