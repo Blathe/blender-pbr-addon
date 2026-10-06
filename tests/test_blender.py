@@ -194,6 +194,7 @@ def test_thumbnails_off_skips_unconnected_nodes(tree):
 
 @pytest.mark.parametrize("idname", [
     "PTGNodeVoronoi", "PTGNodeTile", "PTGNodeGradient", "PTGNodeBlur", "PTGNodeWarp", "PTGNodeTransform",
+    "PTGNodeFloodFill", "PTGNodeTileSampler", "PTGNodeDistance", "PTGNodeBevel",
 ])
 def test_new_nodes_evaluate_into_an_output(tree, idname):
     node = tree.nodes.new(idname)
@@ -326,3 +327,19 @@ def test_torus_uvs_wrap_seamlessly(tree):
     assert all(len(values) == 1 for values in per_vert.values())
     assert len(mesh.vertices) == len(per_vert) and not any(e.use_seam for e in mesh.edges)
     bpy.data.meshes.remove(mesh)
+
+
+
+@pytest.mark.parametrize("idname", ["PTGNodeFloodFillGray", "PTGNodeFloodFillColor"])
+def test_flood_fill_chain(tree, idname):
+    fill = tree.nodes.new("PTGNodeFloodFill")
+    to = tree.nodes.new(idname)
+    tree.links.new(tree.nodes["Shape"].outputs[0], fill.inputs[0])
+    tree.links.new(fill.outputs[0], to.inputs[0])
+    out = next(n for n in tree.nodes if n.bl_idname == "PTGNodeOutput" and n.channel == "BASE_COLOR")
+    tree.links.new(to.outputs[0], out.inputs[0])
+    images = evaluate.evaluate_tree(tree)
+    assert evaluate.status(tree)["error"].startswith("GPU unavailable")  # nothing else went wrong
+    px = np.empty(256 * 256 * 4, dtype=np.float32)
+    images["BASE_COLOR"].pixels.foreach_get(px)
+    assert px.reshape(-1, 4)[:, 0].std() > 0.05
