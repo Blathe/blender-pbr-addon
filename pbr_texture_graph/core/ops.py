@@ -1,0 +1,477 @@
+"""Operation definitions shared by the CPU and GPU backends.
+
+Each op has a numpy implementation (reference and fallback) and a GLSL
+fragment body. This module must not import bpy so it can be tested with
+plain Python.
+
+Conventions:
+- Buffers are (height, width, channels) float32 arrays, row 0 at the bottom,
+  matching Blender image pixel order. Channels is 1 (grayscale) or 4 (RGBA).
+- Every op samples with wrap-around, so all outputs tile seamlessly.
+"""
+
+from dataclasses import dataclass, field
+from typing import Callable
+
+import numpy as np
+
+GRAY = "GRAY"
+COLOR = "COLOR"
+# Output kind for ops whose result is color if any input is color.
+SAME = "SAME"
+
+LUMA = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+
+
+@dataclass
+class Param:
+    name: str
+    kind: str  # "float", "int" or "color"
+    default: object
+
+
+@dataclass
+class OpDef:
+    id: str
+    inputs: list
+    output: str
+    params: list
+    cpu: Callable
+    glsl: str
+    defaults: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        self.defaults = {p.name: p.default for p in self.params}
+
+
+OPS = {}
+
+
+def register_op(op):
+    OPS[op.id] = op
+    return op
+
+
+# ---------------------------------------------------------------------------
+# numpy helpers
+
+def uv_grid(size):
+    w, h = size
+    u = (np.arange(w, dtype=np.float32) + 0.5) / w
+    v = (np.arange(h, dtype=np.float32) + 0.5) / h
+    return np.meshgrid(u, v)
+
+
+def to_gray(buf):
+    if buf.shape[2] == 1:
+        return buf[:, :, 0]
+    return buf[:, :, :3] @ LUMA
+
+
+def to_rgba(buf):
+    if buf.shape[2] == 4:
+        return buf
+    g = buf[:, :, 0]
+    return np.stack([g, g, g, np.ones_like(g)], axis=2)
+
+
+def gray(arr):
+    return arr.astype(np.float32)[:, :, None]
+
+
+def hash_u32(x):
+    x = np.asarray(x, dtype=np.uint32).copy()
+    x ^= x >> np.uint32(16)
+    x *= np.uint32(0x7FEB352D)
+    x ^= x >> np.uint32(15)
+    x *= np.uint32(0x846CA68B)
+    x ^= x >> np.uint32(16)
+    return x
+
+
+def any_color(*bufs):
+    return any(b is not None and b.shape[2] == 4 for b in bufs)
+
+
+# ---------------------------------------------------------------------------
+# GLSL shared by every op. Push constants and samplers are declared by the
+# GPU backend from the op definition; inputs are named in_<name> with a
+# has_<name> flag, params are named p_<name>.
+
+GLSL_COMMON = """
+uint ptg_hash(uint x) {
+  x ^= x >> 16u; x *= 0x7feb352du; x ^= x >> 15u; x *= 0x846ca68bu; x ^= x >> 16u;
+  return x;
+}
+ivec2 ptg_wrap(ivec2 p) { return ((p % ptg_size) + ptg_size) % ptg_size; }
+float ptg_luma(vec4 c) { return dot(c.rgb, vec3(0.2126, 0.7152, 0.0722)); }
+ivec2 ptg_px() { return ivec2(gl_FragCoord.xy); }
+vec2 ptg_uv() { return (vec2(ptg_px()) + 0.5) / vec2(ptg_size); }
+vec4 ptg_gray(float v) { return vec4(v, v, v, 1.0); }
+"""
+
+
+# ---------------------------------------------------------------------------
+# Perlin noise (tileable: the lattice period divides the texture exactly)
+
+def _perlin_octave(u, v, period, seed):
+    px, py = u * period, v * period
+    x0 = np.floor(px).astype(np.int64)
+    y0 = np.floor(py).astype(np.int64)
+    fx, fy = px - x0, py - y0
+
+    def grad_dot(ix, iy, dx, dy):
+        h = hash_u32((ix % period).astype(np.uint32) + hash_u32((iy % period).astype(np.uint32) + np.uint32(seed)))
+        a = h.astype(np.float64) * (2.0 * np.pi / 4294967296.0)
+        return np.cos(a) * dx + np.sin(a) * dy
+
+    n00 = grad_dot(x0, y0, fx, fy)
+    n10 = grad_dot(x0 + 1, y0, fx - 1, fy)
+    n01 = grad_dot(x0, y0 + 1, fx, fy - 1)
+    n11 = grad_dot(x0 + 1, y0 + 1, fx - 1, fy - 1)
+    sx = fx * fx * fx * (fx * (fx * 6 - 15) + 10)
+    sy = fy * fy * fy * (fy * (fy * 6 - 15) + 10)
+    nx0 = n00 + sx * (n10 - n00)
+    nx1 = n01 + sx * (n11 - n01)
+    return nx0 + sy * (nx1 - nx0)
+
+
+def _perlin_cpu(inputs, p, size):
+    u, v = uv_grid(size)
+    total, amp, acc = 0.0, 1.0, np.zeros_like(u, dtype=np.float64)
+    base = max(1, int(p["scale"]))
+    for o in range(max(1, int(p["octaves"]))):
+        seed = int(hash_u32(np.uint32((int(p["seed"]) + o * 1013) & 0xFFFFFFFF)))
+        acc += amp * _perlin_octave(u, v, base << o, seed)
+        total += amp
+        amp *= p["persistence"]
+    return gray(np.clip(0.5 + 0.7 * acc / total, 0.0, 1.0))
+
+
+register_op(OpDef(
+    id="PERLIN",
+    inputs=[],
+    output=GRAY,
+    params=[
+        Param("scale", "int", 4),
+        Param("octaves", "int", 4),
+        Param("persistence", "float", 0.5),
+        Param("seed", "int", 0),
+    ],
+    cpu=_perlin_cpu,
+    glsl="""
+float grad_dot(int ix, int iy, int period, uint s, vec2 d) {
+  uint h = ptg_hash(uint(ix % period) + ptg_hash(uint(iy % period) + s));
+  float a = float(h) * (6.283185307179586 / 4294967296.0);
+  return cos(a) * d.x + sin(a) * d.y;
+}
+float perlin_octave(vec2 uv, int period, uint s) {
+  vec2 p = uv * float(period);
+  ivec2 i0 = ivec2(floor(p));
+  vec2 f = p - vec2(i0);
+  float n00 = grad_dot(i0.x, i0.y, period, s, f);
+  float n10 = grad_dot(i0.x + 1, i0.y, period, s, f - vec2(1.0, 0.0));
+  float n01 = grad_dot(i0.x, i0.y + 1, period, s, f - vec2(0.0, 1.0));
+  float n11 = grad_dot(i0.x + 1, i0.y + 1, period, s, f - vec2(1.0, 1.0));
+  vec2 t = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  return mix(mix(n00, n10, t.x), mix(n01, n11, t.x), t.y);
+}
+void main() {
+  vec2 uv = ptg_uv();
+  float total = 0.0, amp = 1.0, acc = 0.0;
+  int base = max(1, p_scale);
+  for (int o = 0; o < max(1, p_octaves); o++) {
+    uint s = ptg_hash(uint(p_seed + o * 1013));
+    acc += amp * perlin_octave(uv, base << o, s);
+    total += amp;
+    amp *= p_persistence;
+  }
+  fragColor = ptg_gray(clamp(0.5 + 0.7 * acc / total, 0.0, 1.0));
+}
+""",
+))
+
+
+# ---------------------------------------------------------------------------
+# Shape: a tiled circle, square or diamond
+
+SHAPES = ("CIRCLE", "SQUARE", "DIAMOND")
+
+
+def _shape_cpu(inputs, p, size):
+    u, v = uv_grid(size)
+    tiles = max(1, int(p["tiling"]))
+    cx = np.mod(u * tiles, 1.0) * 2.0 - 1.0
+    cy = np.mod(v * tiles, 1.0) * 2.0 - 1.0
+    kind = int(p["shape"])
+    if kind == 0:
+        d = np.sqrt(cx * cx + cy * cy)
+    elif kind == 1:
+        d = np.maximum(np.abs(cx), np.abs(cy))
+    else:
+        d = np.abs(cx) + np.abs(cy)
+    soft = max(float(p["softness"]), 1e-4)
+    edge = float(p["size"])
+    t = np.clip((d - (edge - soft)) / soft, 0.0, 1.0)
+    return gray(1.0 - t * t * (3.0 - 2.0 * t))
+
+
+register_op(OpDef(
+    id="SHAPE",
+    inputs=[],
+    output=GRAY,
+    params=[
+        Param("shape", "int", 0),
+        Param("tiling", "int", 1),
+        Param("size", "float", 0.8),
+        Param("softness", "float", 0.3),
+    ],
+    cpu=_shape_cpu,
+    glsl="""
+void main() {
+  vec2 c = fract(ptg_uv() * float(max(1, p_tiling))) * 2.0 - 1.0;
+  float d;
+  if (p_shape == 0) d = length(c);
+  else if (p_shape == 1) d = max(abs(c.x), abs(c.y));
+  else d = abs(c.x) + abs(c.y);
+  float soft = max(p_softness, 1e-4);
+  fragColor = ptg_gray(1.0 - smoothstep(p_size - soft, p_size, d));
+}
+""",
+))
+
+
+# ---------------------------------------------------------------------------
+# Blend
+
+BLEND_MODES = ("NORMAL", "ADD", "MULTIPLY", "SCREEN", "OVERLAY", "SUBTRACT", "DARKEN", "LIGHTEN")
+
+
+def _blend_cpu(inputs, p, size):
+    fg, bg, mask = inputs["foreground"], inputs["background"], inputs["mask"]
+    w, h = size
+    color = any_color(fg, bg)
+    conv = to_rgba if color else (lambda b: b)
+    zero = np.zeros((h, w, 4 if color else 1), dtype=np.float32)
+    if color:
+        zero[:, :, 3] = 1.0
+    a = conv(fg) if fg is not None else zero
+    b = conv(bg) if bg is not None else zero
+    mode = int(p["mode"])
+    if mode == 0:
+        r = a
+    elif mode == 1:
+        r = a + b
+    elif mode == 2:
+        r = a * b
+    elif mode == 3:
+        r = 1.0 - (1.0 - a) * (1.0 - b)
+    elif mode == 4:
+        r = np.where(b < 0.5, 2.0 * a * b, 1.0 - 2.0 * (1.0 - a) * (1.0 - b))
+    elif mode == 5:
+        r = b - a
+    elif mode == 6:
+        r = np.minimum(a, b)
+    else:
+        r = np.maximum(a, b)
+    k = float(p["opacity"])
+    if mask is not None:
+        k = k * to_gray(mask)[:, :, None]
+    out = np.clip(b + (r - b) * k, 0.0, 1.0).astype(np.float32)
+    if color:
+        out[:, :, 3] = 1.0
+    return out
+
+
+register_op(OpDef(
+    id="BLEND",
+    inputs=["foreground", "background", "mask"],
+    output=SAME,
+    params=[Param("mode", "int", 0), Param("opacity", "float", 1.0)],
+    cpu=_blend_cpu,
+    glsl="""
+void main() {
+  ivec2 px = ptg_px();
+  vec4 a = has_foreground != 0 ? texelFetch(in_foreground, px, 0) : vec4(0.0, 0.0, 0.0, 1.0);
+  vec4 b = has_background != 0 ? texelFetch(in_background, px, 0) : vec4(0.0, 0.0, 0.0, 1.0);
+  vec4 r;
+  if (p_mode == 0) r = a;
+  else if (p_mode == 1) r = a + b;
+  else if (p_mode == 2) r = a * b;
+  else if (p_mode == 3) r = 1.0 - (1.0 - a) * (1.0 - b);
+  else if (p_mode == 4) r = mix(2.0 * a * b, 1.0 - 2.0 * (1.0 - a) * (1.0 - b), step(0.5, b));
+  else if (p_mode == 5) r = b - a;
+  else if (p_mode == 6) r = min(a, b);
+  else r = max(a, b);
+  float k = p_opacity;
+  if (has_mask != 0) k *= ptg_luma(texelFetch(in_mask, px, 0));
+  fragColor = vec4(clamp(mix(b, r, k), 0.0, 1.0).rgb, 1.0);
+}
+""",
+))
+
+
+# ---------------------------------------------------------------------------
+# Levels
+
+def _levels_cpu(inputs, p, size):
+    src = inputs["input"]
+    if src is None:
+        return gray(np.zeros((size[1], size[0]), dtype=np.float32))
+    span = max(float(p["in_high"]) - float(p["in_low"]), 1e-5)
+    rgb = src if src.shape[2] == 1 else src[:, :, :3]
+    t = np.clip((rgb - float(p["in_low"])) / span, 0.0, 1.0)
+    t = np.power(t, 1.0 / max(float(p["gamma"]), 1e-3))
+    t = float(p["out_low"]) + t * (float(p["out_high"]) - float(p["out_low"]))
+    if src.shape[2] == 1:
+        return t.astype(np.float32)
+    out = src.copy()
+    out[:, :, :3] = t
+    return out
+
+
+register_op(OpDef(
+    id="LEVELS",
+    inputs=["input"],
+    output=SAME,
+    params=[
+        Param("in_low", "float", 0.0),
+        Param("in_high", "float", 1.0),
+        Param("gamma", "float", 1.0),
+        Param("out_low", "float", 0.0),
+        Param("out_high", "float", 1.0),
+    ],
+    cpu=_levels_cpu,
+    glsl="""
+void main() {
+  if (has_input == 0) { fragColor = ptg_gray(0.0); return; }
+  vec4 c = texelFetch(in_input, ptg_px(), 0);
+  float span = max(p_in_high - p_in_low, 1e-5);
+  vec3 t = clamp((c.rgb - p_in_low) / span, 0.0, 1.0);
+  t = pow(t, vec3(1.0 / max(p_gamma, 1e-3)));
+  fragColor = vec4(p_out_low + t * (p_out_high - p_out_low), c.a);
+}
+""",
+))
+
+
+# ---------------------------------------------------------------------------
+# Normal from height (Sobel, wrapped). Strength is resolution independent.
+
+NORMAL_FORMATS = ("OPENGL", "DIRECTX")
+
+
+def _normal_cpu(inputs, p, size):
+    w, h = size
+    src = inputs["height"]
+    if src is None:
+        out = np.zeros((h, w, 4), dtype=np.float32)
+        out[:, :] = (0.5, 0.5, 1.0, 1.0)
+        return out
+    g = to_gray(src)
+
+    def s(dx, dy):
+        return np.roll(np.roll(g, -dy, axis=0), -dx, axis=1)
+
+    gx = (s(1, -1) + 2 * s(1, 0) + s(1, 1)) - (s(-1, -1) + 2 * s(-1, 0) + s(-1, 1))
+    gy = (s(-1, 1) + 2 * s(0, 1) + s(1, 1)) - (s(-1, -1) + 2 * s(0, -1) + s(1, -1))
+    k = float(p["intensity"]) / 32.0
+    nx = -gx / 8.0 * w * k
+    ny = -gy / 8.0 * h * k
+    if int(p["format"]) == 1:
+        ny = -ny
+    length = np.sqrt(nx * nx + ny * ny + 1.0)
+    out = np.empty((h, w, 4), dtype=np.float32)
+    out[:, :, 0] = nx / length * 0.5 + 0.5
+    out[:, :, 1] = ny / length * 0.5 + 0.5
+    out[:, :, 2] = 1.0 / length * 0.5 + 0.5
+    out[:, :, 3] = 1.0
+    return out
+
+
+register_op(OpDef(
+    id="NORMAL",
+    inputs=["height"],
+    output=COLOR,
+    params=[Param("intensity", "float", 1.0), Param("format", "int", 0)],
+    cpu=_normal_cpu,
+    glsl="""
+float hgt(ivec2 p) { return ptg_luma(texelFetch(in_height, ptg_wrap(p), 0)); }
+void main() {
+  if (has_height == 0) { fragColor = vec4(0.5, 0.5, 1.0, 1.0); return; }
+  ivec2 p = ptg_px();
+  float gx = (hgt(p + ivec2(1, -1)) + 2.0 * hgt(p + ivec2(1, 0)) + hgt(p + ivec2(1, 1)))
+           - (hgt(p + ivec2(-1, -1)) + 2.0 * hgt(p + ivec2(-1, 0)) + hgt(p + ivec2(-1, 1)));
+  float gy = (hgt(p + ivec2(-1, 1)) + 2.0 * hgt(p + ivec2(0, 1)) + hgt(p + ivec2(1, 1)))
+           - (hgt(p + ivec2(-1, -1)) + 2.0 * hgt(p + ivec2(0, -1)) + hgt(p + ivec2(1, -1)));
+  float k = p_intensity / 32.0;
+  vec3 n = vec3(-gx / 8.0 * float(ptg_size.x) * k, -gy / 8.0 * float(ptg_size.y) * k, 1.0);
+  if (p_format == 1) n.y = -n.y;
+  fragColor = vec4(normalize(n) * 0.5 + 0.5, 1.0);
+}
+""",
+))
+
+
+# ---------------------------------------------------------------------------
+# Gradient map: grayscale to color through three stops (stylized ramps)
+
+def _gradient_map_cpu(inputs, p, size):
+    w, h = size
+    src = inputs["input"]
+    t = to_gray(src) if src is not None else np.zeros((h, w), dtype=np.float32)
+    lo, mid, hi = (np.asarray(p[k], dtype=np.float32) for k in ("color_low", "color_mid", "color_high"))
+    m = min(max(float(p["mid_position"]), 1e-3), 1.0 - 1e-3)
+    a = np.clip(t / m, 0.0, 1.0)[:, :, None]
+    b = np.clip((t - m) / (1.0 - m), 0.0, 1.0)[:, :, None]
+    out = np.where(t[:, :, None] < m, lo + (mid - lo) * a, mid + (hi - mid) * b)
+    out = out.astype(np.float32)
+    out[:, :, 3] = 1.0
+    return out
+
+
+register_op(OpDef(
+    id="GRADIENT_MAP",
+    inputs=["input"],
+    output=COLOR,
+    params=[
+        Param("color_low", "color", (0.05, 0.03, 0.08, 1.0)),
+        Param("color_mid", "color", (0.35, 0.2, 0.12, 1.0)),
+        Param("color_high", "color", (0.9, 0.7, 0.4, 1.0)),
+        Param("mid_position", "float", 0.5),
+    ],
+    cpu=_gradient_map_cpu,
+    glsl="""
+void main() {
+  float t = has_input != 0 ? ptg_luma(texelFetch(in_input, ptg_px(), 0)) : 0.0;
+  float m = clamp(p_mid_position, 1e-3, 1.0 - 1e-3);
+  vec4 c = t < m ? mix(p_color_low, p_color_mid, clamp(t / m, 0.0, 1.0))
+                 : mix(p_color_mid, p_color_high, clamp((t - m) / (1.0 - m), 0.0, 1.0));
+  fragColor = vec4(c.rgb, 1.0);
+}
+""",
+))
+
+
+# ---------------------------------------------------------------------------
+# Output: passes its input through; the evaluator collects these per channel.
+
+def _output_cpu(inputs, p, size):
+    src = inputs["input"]
+    if src is None:
+        return gray(np.zeros((size[1], size[0]), dtype=np.float32))
+    return src
+
+
+register_op(OpDef(
+    id="OUTPUT",
+    inputs=["input"],
+    output=SAME,
+    params=[],
+    cpu=_output_cpu,
+    glsl="""
+void main() {
+  fragColor = has_input != 0 ? texelFetch(in_input, ptg_px(), 0) : ptg_gray(0.0);
+}
+""",
+))
