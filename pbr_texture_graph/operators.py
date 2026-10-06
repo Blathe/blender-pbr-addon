@@ -73,6 +73,41 @@ class PTG_OT_view_node(Operator):
         return {"FINISHED"}
 
 
+class PTG_OT_preview_on_model(Operator):
+    """Add a preview mesh with this graph's material and show it in Material Preview"""
+    bl_idname = "ptg.preview_on_model"
+    bl_label = "Preview on Model"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return _edit_tree(context) is not None and context.scene is not None
+
+    def execute(self, context):
+        from . import preview
+
+        tree = _edit_tree(context)
+        images = evaluate.evaluate_tree(tree)
+        if not images:
+            self.report({"WARNING"}, "Add an Output node first")
+            return {"CANCELLED"}
+        build_material(tree, images)
+        obj = preview.preview_object(tree, context.scene)
+        for other in context.view_layer.objects.selected:
+            other.select_set(False)
+        if obj.name in context.view_layer.objects:
+            obj.select_set(True)
+            context.view_layer.objects.active = obj
+        shown = False
+        for area in context.screen.areas:
+            if area.type == "VIEW_3D":
+                area.spaces.active.shading.type = "MATERIAL"
+                shown = True
+        if not shown:
+            self.report({"INFO"}, f"Added \"{obj.name}\"; open a 3D Viewport in Material Preview to see it")
+        return {"FINISHED"}
+
+
 class PTG_OT_export_textures(Operator):
     """Write this graph's maps to texture files using the chosen engine preset"""
     bl_idname = "ptg.export_textures"
@@ -158,4 +193,4 @@ class PTG_OT_new_example(Operator):
         return {"FINISHED"}
 
 
-classes = (PTG_OT_update, PTG_OT_create_material, PTG_OT_view_node, PTG_OT_export_textures, PTG_OT_new_example)
+classes = (PTG_OT_update, PTG_OT_create_material, PTG_OT_view_node, PTG_OT_preview_on_model, PTG_OT_export_textures, PTG_OT_new_example)
