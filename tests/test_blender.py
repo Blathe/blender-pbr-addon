@@ -206,3 +206,54 @@ def test_new_nodes_evaluate_into_an_output(tree, idname):
     px = np.empty(256 * 256 * 4, dtype=np.float32)
     images["HEIGHT"].pixels.foreach_get(px)
     assert px.std() > 0.005, idname
+
+
+def test_export_presets_write_expected_files(tree, tmp_path):
+    from pbr_texture_graph.export_blender import export_tree
+    from tests.test_export import decode_png
+
+    paths = export_tree(tree, str(tmp_path / "gltf"), "GLTF", "PNG8", 64, "{name}_{map}")
+    names = sorted(p.rsplit("/", 1)[1] for p in paths)
+    assert names == ["Stone Tiles_BaseColor.png", "Stone Tiles_Height.png",
+                     "Stone Tiles_Normal.png", "Stone Tiles_ORM.png"]
+    pixels, bits, chunks = decode_png((tmp_path / "gltf" / "Stone Tiles_BaseColor.png").read_bytes())
+    assert pixels.shape == (64, 64, 3) and bits == 8 and b"sRGB" in chunks
+    assert pixels.std() > 2
+    height, bits, _ = decode_png((tmp_path / "gltf" / "Stone Tiles_Height.png").read_bytes())
+    assert bits == 16 and height.shape == (64, 64, 1)
+    orm, _, _ = decode_png((tmp_path / "gltf" / "Stone Tiles_ORM.png").read_bytes())
+    assert (orm[:, :, 0] == 255).all() and (orm[:, :, 2] == 0).all()  # no AO, no metallic
+    assert orm[:, :, 1].std() > 1
+
+    unreal = export_tree(tree, str(tmp_path / "ue"), "UNREAL", "PNG16", 64, "{map}")
+    gl, _, _ = decode_png((tmp_path / "gltf" / "Stone Tiles_Normal.png").read_bytes())
+    dx, _, _ = decode_png((tmp_path / "ue" / "Normal.png").read_bytes())
+    assert len(unreal) == 4
+    np.testing.assert_allclose(dx[:, :, 1] / 65535.0, 1.0 - gl[:, :, 1] / 255.0, atol=0.003)
+    # Exporting leaves no extra evaluator or image behind.
+    assert (tree.name, "export") not in evaluate._evaluators
+
+
+def test_export_exr(tree, tmp_path):
+    from pbr_texture_graph.export_blender import export_tree
+
+    before = len(bpy.data.images)
+    paths = export_tree(tree, str(tmp_path), "SEPARATE", "EXR", 32, "{map}")
+    assert sorted(p.rsplit("/", 1)[1] for p in paths) == [
+        "BaseColor.exr", "Height.exr", "Normal.exr", "Roughness.exr"]
+    assert len(bpy.data.images) == before
+    img = bpy.data.images.load(str(tmp_path / "Roughness.exr"))
+    try:
+        assert tuple(img.size) == (32, 32)
+        px = np.empty(32 * 32 * 4, dtype=np.float32)
+        img.pixels.foreach_get(px)
+        assert 0.55 < px[0::4].mean() < 0.95  # roughness Levels maps into 0.6..0.9
+    finally:
+        bpy.data.images.remove(img)
+
+
+
+def test_export_folder_accepts_blend_relative_paths(tree, recwarn):
+    tree.export_directory = "//textures/"
+    assert tree.export_directory == "//textures/"
+    assert not [w for w in recwarn if "blend relative" in str(w.message)]
