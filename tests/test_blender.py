@@ -259,7 +259,7 @@ def test_export_folder_accepts_blend_relative_paths(tree, recwarn):
     assert not [w for w in recwarn if "blend relative" in str(w.message)]
 
 
-@pytest.mark.parametrize("shape", ["TORUS", "SPHERE", "CUBE", "CYLINDER", "PLANE"])
+@pytest.mark.parametrize("shape", ["TORUS", "SPHERE", "UV_SPHERE", "CUBE", "CYLINDER", "PLANE"])
 def test_preview_object_has_material_and_uvs(tree, shape):
     from pbr_texture_graph import preview
 
