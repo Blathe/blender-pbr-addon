@@ -12,6 +12,21 @@ from .ops import GLSL_COMMON
 
 _TYPES = {"float": "FLOAT", "int": "INT", "color": "VEC4"}
 
+THUMB_GLSL = """
+void main() {
+  ivec2 p = ivec2(gl_FragCoord.xy);
+  vec2 cell = vec2(src_size) / vec2(dst_size);
+  vec4 acc = vec4(0.0);
+  for (int j = 0; j < 4; j++) {
+    for (int i = 0; i < 4; i++) {
+      ivec2 q = ivec2((vec2(p) + (vec2(i, j) + 0.5) / 4.0) * cell);
+      acc += texelFetch(src, clamp(q, ivec2(0), src_size - 1), 0);
+    }
+  }
+  fragColor = acc / 16.0;
+}
+"""
+
 
 def set_uniform(setter, name, value):
     """Set a uniform, skipping ones the GLSL compiler optimized out because
@@ -31,6 +46,8 @@ class GPUBackend:
         self._shaders = {}
         # (w, h) -> reused gpu.types.Buffer for readback
         self._read_buffers = {}
+        self._thumb = None
+        self._thumb_targets = {}
         data = gpu.types.Buffer("FLOAT", 4, [0.0, 0.0, 0.0, 1.0])
         self._dummy = gpu.types.GPUTexture((1, 1), format="RGBA32F", data=data)
 
@@ -107,6 +124,39 @@ class GPUBackend:
         except (TypeError, ValueError, BufferError):
             arr = np.array(data.to_list(), dtype=np.float32)
         return arr.reshape(h, w, 4).copy()
+
+    def thumbnail(self, buf, n):
+        """Box-filtered (n, n, 4) float32 copy of a result."""
+        if self._thumb is None:
+            info = gpu.types.GPUShaderCreateInfo()
+            info.vertex_in(0, "VEC2", "pos")
+            info.fragment_out(0, "VEC4", "fragColor")
+            info.push_constant("IVEC2", "src_size")
+            info.push_constant("IVEC2", "dst_size")
+            info.sampler(0, "FLOAT_2D", "src")
+            info.vertex_source("void main() { gl_Position = vec4(pos, 0.0, 1.0); }")
+            info.fragment_source(THUMB_GLSL)
+            shader = gpu.shader.create_from_info(info)
+            self._thumb = (shader, batch_for_shader(
+                shader, "TRIS",
+                {"pos": ((-1, -1), (1, -1), (1, 1), (-1, 1))},
+                indices=((0, 1, 2), (0, 2, 3)),
+            ))
+        shader, batch = self._thumb
+        off = self._thumb_targets.get(n)
+        if off is None:
+            off = self._thumb_targets[n] = gpu.types.GPUOffScreen(n, n, format="RGBA32F")
+        with off.bind():
+            gpu.state.active_framebuffer_get().clear(color=(0.0, 0.0, 0.0, 1.0))
+            old_blend = gpu.state.blend_get()
+            gpu.state.blend_set("NONE")
+            shader.bind()
+            set_uniform(shader.uniform_int, "src_size", (buf.width, buf.height))
+            set_uniform(shader.uniform_int, "dst_size", (n, n))
+            set_uniform(shader.uniform_sampler, "src", buf.texture_color)
+            batch.draw(shader)
+            gpu.state.blend_set(old_blend)
+        return self.to_numpy(off).copy()
 
     def free(self, buf):
         buf.free()

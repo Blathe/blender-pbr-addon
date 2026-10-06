@@ -43,6 +43,8 @@ class PTGTextureGraph(NodeTree):
         default="256",
         description="Resolution used while you adjust values; full resolution follows when you stop",
     )
+    show_thumbnails: BoolProperty(name="Thumbnails", default=True, update=_changed,
+                                  description="Show a preview of each node's result")
     auto_update: BoolProperty(name="Auto Update", default=True, description="Re-evaluate whenever the graph changes")
     material: PointerProperty(name="Material", type=bpy.types.Material)
 
@@ -111,8 +113,17 @@ class PTGNode:
         return values
 
     def draw_buttons(self, context, layout):
+        self.draw_thumbnail(layout)
         for p in OPS[self.op_id].params:
             layout.prop(self, p.name)
+
+    def draw_thumbnail(self, layout):
+        if not self.id_data.show_thumbnails:
+            return
+        from . import thumbnails
+        icon = thumbnails.icon_id(self.id_data, self.name)
+        if icon:
+            layout.template_icon(icon_value=icon, scale=6.0)
 
 
 class PTGNodePerlin(PTGNode, Node):
@@ -209,6 +220,52 @@ class PTGNodeGradientMap(PTGNode, Node):
     mid_position: FloatProperty(name="Mid Position", default=0.5, min=0.0, max=1.0, update=_changed)
 
 
+class PTGNodePosterize(PTGNode, Node):
+    """Quantize values into flat bands for a painted, cel-like look"""
+    bl_idname = "PTGNodePosterize"
+    bl_label = "Posterize"
+    op_id = "POSTERIZE"
+    in_sockets = (("PTGSocketColor", "Input"),)
+    out_socket = ("PTGSocketColor", "Result")
+
+    steps: IntProperty(name="Steps", default=4, min=2, max=32, update=_changed)
+
+
+class PTGNodeHeightToLight(PTGNode, Node):
+    """Paint directional light and cavity shading into a base color"""
+    bl_idname = "PTGNodeHeightToLight"
+    bl_label = "Height to Light"
+    op_id = "HEIGHT_TO_LIGHT"
+    in_sockets = (("PTGSocketGray", "Height"), ("PTGSocketColor", "Base Color"))
+    out_socket = ("PTGSocketColor", "Color")
+
+    angle: FloatProperty(name="Light Angle", default=135.0, min=0.0, max=360.0, update=_changed,
+                         description="Direction the light comes from, in degrees (90 = top of the texture)")
+    elevation: FloatProperty(name="Elevation", default=45.0, min=1.0, max=90.0, update=_changed)
+    depth: FloatProperty(name="Depth", default=1.0, min=0.0, max=20.0, update=_changed,
+                         description="How strongly the height shapes the light")
+    light: FloatProperty(name="Light", default=0.6, min=0.0, max=1.0, update=_changed)
+    cavity: FloatProperty(name="Cavity", default=0.4, min=0.0, max=1.0, update=_changed,
+                          description="Darken low areas")
+
+
+class PTGNodeEdgeHighlight(PTGNode, Node):
+    """Bright painted rims on raised edges"""
+    bl_idname = "PTGNodeEdgeHighlight"
+    bl_label = "Edge Highlight"
+    op_id = "EDGE_HIGHLIGHT"
+    in_sockets = (("PTGSocketGray", "Height"), ("PTGSocketColor", "Base Color"))
+    out_socket = ("PTGSocketColor", "Color")
+
+    color: FloatVectorProperty(name="Color", subtype="COLOR", size=4, min=0.0, max=1.0,
+                               default=(1.0, 0.9, 0.7, 1.0), update=_changed)
+    width: FloatProperty(name="Width", default=0.01, min=0.001, max=0.1, precision=3, update=_changed,
+                         description="Rim width as a fraction of the texture")
+    threshold: FloatProperty(name="Threshold", default=0.01, min=0.0, max=0.5, precision=3, update=_changed)
+    softness: FloatProperty(name="Softness", default=0.05, min=0.001, max=0.5, precision=3, update=_changed)
+    strength: FloatProperty(name="Strength", default=1.0, min=0.0, max=1.0, update=_changed)
+
+
 CHANNELS = [
     ("BASE_COLOR", "Base Color", ""),
     ("ROUGHNESS", "Roughness", ""),
@@ -231,6 +288,7 @@ class PTGNodeOutput(PTGNode, Node):
     channel: EnumProperty(name="Channel", items=CHANNELS, update=_changed)
 
     def draw_buttons(self, context, layout):
+        self.draw_thumbnail(layout)
         layout.prop(self, "channel", text="")
 
     def draw_label(self):
@@ -244,6 +302,9 @@ NODE_CLASSES = (
     PTGNodeLevels,
     PTGNodeNormal,
     PTGNodeGradientMap,
+    PTGNodePosterize,
+    PTGNodeHeightToLight,
+    PTGNodeEdgeHighlight,
     PTGNodeOutput,
 )
 

@@ -26,6 +26,7 @@ class PTG_PT_graph(Panel):
         col.prop(tree, "resolution")
         col.prop(tree, "draft_resolution")
         col.prop(tree, "backend")
+        col.prop(tree, "show_thumbnails")
         col.prop(tree, "auto_update")
 
         col = layout.column(align=True)
@@ -45,6 +46,7 @@ class PTG_PT_graph(Panel):
             col.label(text=f"Graph: {st['graph_ms']:.1f} ms, {st['nodes']} nodes re-run")
             col.label(text=f"Readback: {st['readback_ms']:.1f} ms, write: {st['write_ms']:.1f} ms")
             col.label(text=f"Images updated: {st['images']}, updates/sec: {len(st['recent'])}")
+            col.label(text=f"Thumbnails: {st['thumbs']} in {st['thumb_ms']:.1f} ms")
         if st["error"]:
             for i, line in enumerate(_wrap(st["error"], 40)):
                 box.label(text=line, icon="ERROR" if i == 0 else "BLANK1")
@@ -74,6 +76,9 @@ CATEGORIES = [
     PTGCategory("PTG_GENERATORS", "Generators", items=[NodeItem("PTGNodePerlin"), NodeItem("PTGNodeShape")]),
     PTGCategory("PTG_FILTERS", "Filters", items=[
         NodeItem("PTGNodeBlend"), NodeItem("PTGNodeLevels"), NodeItem("PTGNodeGradientMap"), NodeItem("PTGNodeNormal"),
+    ]),
+    PTGCategory("PTG_STYLIZED", "Stylized", items=[
+        NodeItem("PTGNodeHeightToLight"), NodeItem("PTGNodeEdgeHighlight"), NodeItem("PTGNodePosterize"),
     ]),
     PTGCategory("PTG_OUTPUT", "Output", items=[NodeItem("PTGNodeOutput")]),
 ]

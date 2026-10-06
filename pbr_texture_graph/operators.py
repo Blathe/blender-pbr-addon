@@ -74,7 +74,7 @@ class PTG_OT_view_node(Operator):
 
 
 def build_example(tree):
-    """A stylized stone-tile graph that exercises every Phase 1 node."""
+    """A stylized stone-tile graph that exercises most nodes."""
     nodes, links = tree.nodes, tree.links
 
     def add(idname, x, y, **props):
@@ -91,6 +91,8 @@ def build_example(tree):
     color = add("PTGNodeGradientMap", -50, 450,
                 color_low=(0.04, 0.04, 0.09, 1.0), color_mid=(0.22, 0.24, 0.33, 1.0),
                 color_high=(0.75, 0.66, 0.5, 1.0), mid_position=0.55)
+    lit = add("PTGNodeHeightToLight", 200, 600, depth=1.5, light=0.7, cavity=0.5)
+    rims = add("PTGNodeEdgeHighlight", 450, 600, width=0.015, threshold=0.012, softness=0.05, strength=0.6)
     normal = add("PTGNodeNormal", -50, 150, intensity=2.0)
     rough = add("PTGNodeLevels", -50, -150, out_low=0.6, out_high=0.9)
     links.new(noise.outputs[0], height.inputs["Foreground"])
@@ -99,10 +101,14 @@ def build_example(tree):
     links.new(levels.outputs[0], color.inputs[0])
     links.new(levels.outputs[0], normal.inputs[0])
     links.new(levels.outputs[0], rough.inputs[0])
+    links.new(levels.outputs[0], lit.inputs["Height"])
+    links.new(color.outputs[0], lit.inputs["Base Color"])
+    links.new(levels.outputs[0], rims.inputs["Height"])
+    links.new(lit.outputs[0], rims.inputs["Base Color"])
 
-    for channel, src, y in (("BASE_COLOR", color, 450), ("NORMAL", normal, 150),
-                            ("ROUGHNESS", rough, -150), ("HEIGHT", levels, -400)):
-        out = add("PTGNodeOutput", 250, y, channel=channel)
+    for channel, src, x, y in (("BASE_COLOR", rims, 700, 600), ("NORMAL", normal, 250, 150),
+                               ("ROUGHNESS", rough, 250, -150), ("HEIGHT", levels, 250, -400)):
+        out = add("PTGNodeOutput", x, y, channel=channel)
         links.new(src.outputs[0], out.inputs[0])
 
 

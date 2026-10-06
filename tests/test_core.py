@@ -166,3 +166,55 @@ def test_every_op_has_matching_glsl_names():
             assert f"p_{p.name}" in op.glsl, (op.id, p.name)
         for name in op.inputs:
             assert f"in_{name}" in op.glsl and f"has_{name}" in op.glsl, (op.id, name)
+
+
+@pytest.mark.parametrize("op,params", [
+    ("HEIGHT_TO_LIGHT", {}),
+    ("EDGE_HIGHLIGHT", {}),
+    ("POSTERIZE", {}),
+])
+def test_stylized_ops_tile_and_stay_in_range(op, params):
+    h = run("PERLIN", octaves=3)
+    img = run(op, {"height": h} if op != "POSTERIZE" else {"input": h}, **params)
+    assert 0.0 <= img.min() and img.max() <= 1.0
+    assert seam_ok(img)
+
+
+def test_posterize_produces_exact_bands():
+    ramp = np.tile(np.linspace(0, 1, 64, dtype=np.float32), (64, 1))[:, :, None]
+    out = run("POSTERIZE", {"input": ramp}, steps=4)
+    assert sorted(np.unique(np.round(out, 5))) == pytest.approx([0.0, 1 / 3, 2 / 3, 1.0], abs=1e-5)
+
+
+def test_height_to_light_keeps_flat_areas():
+    flat = np.full((64, 64, 1), 1.0, dtype=np.float32)
+    base = np.zeros((64, 64, 4), dtype=np.float32)
+    base[:, :] = (0.2, 0.4, 0.6, 1.0)
+    out = run("HEIGHT_TO_LIGHT", {"height": flat, "base": base})
+    assert np.allclose(out, base, atol=1e-5)
+
+
+def test_height_to_light_lights_slopes_facing_the_light():
+    u = np.linspace(0, 2 * np.pi, 64, endpoint=False)
+    h = (np.tile(np.sin(u), (64, 1)) * 0.5 + 0.5).astype(np.float32)[:, :, None]
+    # Light from +x (angle 0): slopes facing +x are where height decreases.
+    out = run("HEIGHT_TO_LIGHT", {"height": h}, angle=0.0, cavity=0.0)
+    facing, away = out[32, 32, 0], out[32, 0, 0]  # sin falls fastest at pi, rises at 0
+    assert facing > 0.5 > away
+
+
+def test_edge_highlight_marks_raised_rims_only():
+    shape = run("SHAPE", size=0.6, softness=0.3)
+    flat = run("EDGE_HIGHLIGHT", {"height": np.full((64, 64, 1), 0.5, dtype=np.float32)})
+    assert np.allclose(flat[:, :, :3], 0.0)
+    rims = run("EDGE_HIGHLIGHT", {"height": shape}, width=0.05)
+    assert rims[:, :, 0].max() > 0.5
+    assert rims[32, 32, 0] < rims[:, :, 0].max()  # the plateau centre is not a rim
+
+
+def test_cpu_thumbnail_box_filters():
+    img = np.zeros((64, 64, 1), dtype=np.float32)
+    img[:, :32] = 1.0
+    thumb = CPUBackend().thumbnail(img, 16)
+    assert thumb.shape == (16, 16, 4)
+    assert np.allclose(thumb[:, :8, 0], 1.0) and np.allclose(thumb[:, 8:, 0], 0.0)

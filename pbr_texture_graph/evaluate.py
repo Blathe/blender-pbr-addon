@@ -8,6 +8,7 @@ import bpy
 
 from .core.cpu import CPUBackend
 from .core.graph import Evaluator, GraphError, NodeSpec
+from . import thumbnails
 from .nodes import CHANNELS, TREE_ID, PTGNode, PTGNodeOutput
 
 CHANNEL_LABELS = {c[0]: c[1] for c in CHANNELS}
@@ -23,6 +24,8 @@ _pending = set()
 _last_edit = {}
 # (tree name, channel) -> (content key, was draft) of what each image holds.
 _written = {}
+# (tree name, node name) -> content key of the node's current thumbnail.
+_thumbs = {}
 # Seconds without edits before the full-resolution pass runs.
 SETTLE = 0.35
 # tree name -> status dict shown in the sidebar. Kept out of RNA on purpose:
@@ -36,6 +39,7 @@ def status(tree):
     return _status.setdefault(tree.name, {
         "backend": "", "error": "", "nodes": 0, "total_ms": 0.0, "graph_ms": 0.0,
         "readback_ms": 0.0, "write_ms": 0.0, "images": 0, "recent": [], "draft": False, "size": 0,
+        "thumbs": 0, "thumb_ms": 0.0,
     })
 
 
@@ -77,7 +81,9 @@ def clear_all():
     _pending.clear()
     _last_edit.clear()
     _written.clear()
+    _thumbs.clear()
     _status.clear()
+    thumbnails.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +215,19 @@ def _run(tree, targets, size, quality="full"):
         return cpu, cpu.evaluate(specs, targets, size), note
 
 
+def _update_thumbnails(tree, ev, results):
+    """Refresh thumbnails of nodes whose content changed. Returns the count."""
+    count = 0
+    for node_name, (buf, kind) in results.items():
+        content = ev.content_keys.get(node_name)
+        if _thumbs.get((tree.name, node_name)) == content:
+            continue
+        thumbnails.set_thumbnail(tree, node_name, ev.backend.thumbnail(buf, thumbnails.SIZE), kind)
+        _thumbs[(tree.name, node_name)] = content
+        count += 1
+    return count
+
+
 def evaluate_tree(tree, force=False, draft=False):
     """Evaluate every Output node and write one image per channel.
 
@@ -226,9 +245,12 @@ def evaluate_tree(tree, force=False, draft=False):
     images = {}
     _busy = True
     try:
-        _, outputs = extract_graph(tree)
-        ev, results, note = _run(tree, [o.name for o in outputs], size, "draft" if draft else "full")
+        specs, outputs = extract_graph(tree)
+        targets = list(specs) if tree.show_thumbnails else [o.name for o in outputs]
+        ev, results, note = _run(tree, targets, size, "draft" if draft else "full")
         graph_done = time.perf_counter()
+        thumbs = _update_thumbnails(tree, ev, results) if tree.show_thumbnails else 0
+        thumbs_done = time.perf_counter()
         readback = write = 0.0
         written = 0
         for node in outputs:
@@ -255,7 +277,8 @@ def evaluate_tree(tree, force=False, draft=False):
                 _written[(tree.name, node.channel)] = (content, draft)
             images[node.channel] = img
         st.update(backend=ev.backend.name, nodes=len(ev.ran), error=note, images=written, draft=draft, size=side,
-                  graph_ms=(graph_done - start) * 1000.0, readback_ms=readback * 1000.0, write_ms=write * 1000.0)
+                  graph_ms=(graph_done - start) * 1000.0, readback_ms=readback * 1000.0, write_ms=write * 1000.0,
+                  thumbs=thumbs, thumb_ms=(thumbs_done - graph_done) * 1000.0)
         if getattr(ev.backend, "slow_readback", False):
             st["error"] = (note + " " if note else "") + "Using the fallback GPU readback (details in the system console)."
     except Exception as exc:

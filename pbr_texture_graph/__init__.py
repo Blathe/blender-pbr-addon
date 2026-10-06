@@ -3,7 +3,7 @@
 
 import bpy
 
-from . import evaluate, nodes, operators, ui
+from . import evaluate, nodes, operators, thumbnails, ui
 
 _classes = nodes.classes + operators.classes + ui.classes
 
@@ -12,11 +12,13 @@ def register():
     for cls in _classes:
         bpy.utils.register_class(cls)
     ui.register()
+    thumbnails.register()
     evaluate.register()
 
 
 def unregister():
     evaluate.unregister()
+    thumbnails.unregister()
     ui.unregister()
     for cls in reversed(_classes):
         bpy.utils.unregister_class(cls)
