@@ -24,6 +24,7 @@ class PTG_PT_graph(Panel):
 
         col = layout.column()
         col.prop(tree, "resolution")
+        col.prop(tree, "draft_resolution")
         col.prop(tree, "backend")
         col.prop(tree, "auto_update")
 
@@ -37,7 +38,8 @@ class PTG_PT_graph(Panel):
         st = evaluate.status(tree)
         box = layout.box()
         if st["backend"]:
-            box.label(text=f"Last update: {st['total_ms']:.1f} ms on {st['backend']}")
+            kind = "draft" if st["draft"] else "full"
+            box.label(text=f"Last update: {st['total_ms']:.1f} ms on {st['backend']} ({kind} {st['size']} px)")
             col = box.column(align=True)
             col.scale_y = 0.8
             col.label(text=f"Graph: {st['graph_ms']:.1f} ms, {st['nodes']} nodes re-run")

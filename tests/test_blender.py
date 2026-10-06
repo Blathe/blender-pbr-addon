@@ -117,3 +117,46 @@ def test_set_uniform_skips_optimized_out_uniforms():
 
     with pytest.raises(TypeError):
         set_uniform(broken, "ptg_size", (1, 1))
+
+
+def test_draft_updates_only_changed_outputs_then_refines(tree):
+    tree.resolution = "512"
+    tree.draft_resolution = "128"
+    evaluate.evaluate_tree(tree)
+    st = evaluate.status(tree)
+    assert st["images"] == 4
+
+    tree.nodes["Normal"].intensity = 4.0
+    images = evaluate.evaluate_tree(tree, draft=True)
+    assert st["draft"] and st["images"] == 1
+    assert tuple(images["NORMAL"].size) == (128, 128)
+    assert tuple(images["BASE_COLOR"].size) == (512, 512)
+
+    images = evaluate.evaluate_tree(tree)
+    assert not st["draft"] and st["images"] == 1
+    assert tuple(images["NORMAL"].size) == (512, 512)
+
+
+def test_draft_is_skipped_when_not_smaller(tree):
+    tree.draft_resolution = "512"  # tree.resolution is 256
+    evaluate.evaluate_tree(tree, draft=True)
+    assert not evaluate.status(tree)["draft"]
+
+
+def test_scheduler_runs_draft_then_full(tree):
+    tree.resolution = "512"
+    tree.draft_resolution = "128"
+    evaluate.evaluate_tree(tree)
+    tree.nodes["Levels"].gamma = 1.4
+    evaluate.schedule(tree)
+    evaluate._run_pending()
+    st = evaluate.status(tree)
+    assert st["draft"]
+    assert tree.name in evaluate._last_edit
+    evaluate._last_edit[tree.name] -= 10  # pretend the user stopped editing
+    evaluate._settle()
+    assert not st["draft"] and st["size"] == 512
+    assert tree.name not in evaluate._last_edit
+    for timer in (evaluate._run_pending, evaluate._settle):
+        if bpy.app.timers.is_registered(timer):
+            bpy.app.timers.unregister(timer)

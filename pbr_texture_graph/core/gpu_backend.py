@@ -1,6 +1,8 @@
 """GPU backend: each op is a fragment shader rendered into an offscreen
 RGBA32F buffer. Grayscale results are stored as (v, v, v, 1)."""
 
+import traceback
+
 import numpy as np
 
 import gpu
@@ -27,6 +29,8 @@ class GPUBackend:
 
     def __init__(self):
         self._shaders = {}
+        # (w, h) -> reused gpu.types.Buffer for readback
+        self._read_buffers = {}
         data = gpu.types.Buffer("FLOAT", 4, [0.0, 0.0, 0.0, 1.0])
         self._dummy = gpu.types.GPUTexture((1, 1), format="RGBA32F", data=data)
 
@@ -80,14 +84,27 @@ class GPUBackend:
         return off
 
     def to_numpy(self, buf):
-        """Return an (h, w, 4) float32 array."""
-        tex = buf.texture_color
-        data = tex.read()
+        """Return an (h, w, 4) float32 array. The array may share memory with
+        a reused readback buffer, so copy it before the next call if kept."""
         w, h = buf.width, buf.height
+        data = None
+        if not self.slow_readback:
+            data = self._read_buffers.get((w, h))
+            if data is None:
+                data = gpu.types.Buffer("FLOAT", w * h * 4)
+                self._read_buffers[(w, h)] = data
+            try:
+                with buf.bind():
+                    fb = gpu.state.active_framebuffer_get()
+                    fb.read_color(0, 0, w, h, 4, 0, "FLOAT", data=data)
+                return np.frombuffer(data, dtype=np.float32).reshape(h, w, 4)
+            except Exception:
+                traceback.print_exc()
+                self.slow_readback = True
+        data = buf.texture_color.read()
         try:
             arr = np.frombuffer(data, dtype=np.float32)
         except (TypeError, ValueError, BufferError):
-            self.slow_readback = True
             arr = np.array(data.to_list(), dtype=np.float32)
         return arr.reshape(h, w, 4).copy()
 

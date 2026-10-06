@@ -35,11 +35,15 @@ class Evaluator:
         # node id -> (key, buffer, kind)
         self.cache = {}
         self.ran = []
+        # node id -> key of the node's content ignoring resolution, from the
+        # last evaluate(); equal content keys mean the same image at any size.
+        self.content_keys = {}
 
     def evaluate(self, nodes, targets, size):
         """Return {target id: (buffer, kind)} for the requested node ids."""
         self.ran = []
         keys = {}
+        content = {}
         results = {}
         visiting = set()
 
@@ -70,6 +74,8 @@ class Evaluator:
                 tuple((name, keys[node.inputs[name]] if upstream[name] else None) for name in op.inputs),
             )
             keys[node_id] = hash(key)
+            content[node_id] = hash((key[0], key[2], tuple(
+                (name, content[node.inputs[name]] if upstream[name] else None) for name in op.inputs)))
 
             cached = self.cache.get(node_id)
             if cached is not None and cached[0] == keys[node_id]:
@@ -90,6 +96,7 @@ class Evaluator:
             return results[node_id]
 
         out = {t: visit(t) for t in targets}
+        self.content_keys = content
 
         for node_id in list(self.cache):
             if node_id not in nodes:

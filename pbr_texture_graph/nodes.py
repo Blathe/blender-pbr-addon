@@ -36,6 +36,13 @@ class PTGTextureGraph(NodeTree):
         default="GPU",
         update=_changed,
     )
+    draft_resolution: EnumProperty(
+        name="While Editing",
+        items=[("OFF", "Full", "Always update at full resolution")]
+        + [(str(s), f"{s} px", f"Update at {s} x {s} while editing, then refine") for s in (128, 256, 512)],
+        default="256",
+        description="Resolution used while you adjust values; full resolution follows when you stop",
+    )
     auto_update: BoolProperty(name="Auto Update", default=True, description="Re-evaluate whenever the graph changes")
     material: PointerProperty(name="Material", type=bpy.types.Material)
 

@@ -14,9 +14,17 @@ CHANNEL_LABELS = {c[0]: c[1] for c in CHANNELS}
 LINEAR_CHANNELS = {"BASE_COLOR", "EMISSION"}
 PREVIEW_IMAGE = "Texture Graph Preview"
 
-# tree name -> (Evaluator, status note, requested backend)
+# (tree name, "full" or "draft") -> (Evaluator, status note, requested backend).
+# Draft evaluations run at a lower resolution while the user is editing, so
+# each has its own cache.
 _evaluators = {}
 _pending = set()
+# tree name -> time of the last edit, until a full-resolution pass has run.
+_last_edit = {}
+# (tree name, channel) -> (content key, was draft) of what each image holds.
+_written = {}
+# Seconds without edits before the full-resolution pass runs.
+SETTLE = 0.35
 # tree name -> status dict shown in the sidebar. Kept out of RNA on purpose:
 # writing tree properties from an evaluation can trigger another tree update.
 _status = {}
@@ -27,7 +35,7 @@ _busy = False
 def status(tree):
     return _status.setdefault(tree.name, {
         "backend": "", "error": "", "nodes": 0, "total_ms": 0.0, "graph_ms": 0.0,
-        "readback_ms": 0.0, "write_ms": 0.0, "images": 0, "recent": [],
+        "readback_ms": 0.0, "write_ms": 0.0, "images": 0, "recent": [], "draft": False, "size": 0,
     })
 
 
@@ -41,14 +49,22 @@ def _make_evaluator(tree):
     return Evaluator(CPUBackend()), ""
 
 
-def get_evaluator(tree):
-    entry = _evaluators.get(tree.name)
+def get_evaluator(tree, quality="full"):
+    entry = _evaluators.get((tree.name, quality))
     if entry is None or entry[2] != tree.backend:
         if entry is not None:
             entry[0].clear()
         entry = (*_make_evaluator(tree), tree.backend)
-        _evaluators[tree.name] = entry
+        _evaluators[(tree.name, quality)] = entry
     return entry[0], entry[1]
+
+
+def draft_size(tree):
+    """Resolution used while editing, or None to always use full resolution."""
+    if tree.draft_resolution == "OFF":
+        return None
+    draft = int(tree.draft_resolution)
+    return draft if draft < int(tree.resolution) else None
 
 
 def clear_all():
@@ -59,6 +75,8 @@ def clear_all():
             pass
     _evaluators.clear()
     _pending.clear()
+    _last_edit.clear()
+    _written.clear()
     _status.clear()
 
 
@@ -70,18 +88,40 @@ def schedule(tree):
     if _busy or tree is None or getattr(tree, "bl_idname", "") != TREE_ID or not tree.auto_update:
         return
     _pending.add(tree.name)
+    _last_edit[tree.name] = time.perf_counter()
     if not bpy.app.timers.is_registered(_run_pending):
         bpy.app.timers.register(_run_pending, first_interval=0.02)
 
 
 def _run_pending():
+    """Quick pass right after an edit: draft resolution when enabled."""
     names = list(_pending)
     _pending.clear()
     for name in names:
         tree = bpy.data.node_groups.get(name)
+        if tree is None or tree.bl_idname != TREE_ID:
+            _last_edit.pop(name, None)
+            continue
+        draft = draft_size(tree) is not None
+        evaluate_tree(tree, draft=draft)
+        if not draft:
+            _last_edit.pop(name, None)
+    if _last_edit and not bpy.app.timers.is_registered(_settle):
+        bpy.app.timers.register(_settle, first_interval=SETTLE)
+    return None
+
+
+def _settle():
+    """Full-resolution pass once a tree has had no edits for SETTLE seconds."""
+    now = time.perf_counter()
+    for name, edited in list(_last_edit.items()):
+        if now - edited < SETTLE or name in _pending:
+            continue
+        del _last_edit[name]
+        tree = bpy.data.node_groups.get(name)
         if tree is not None and tree.bl_idname == TREE_ID:
             evaluate_tree(tree)
-    return None
+    return SETTLE / 2 if _last_edit else None
 
 
 # ---------------------------------------------------------------------------
@@ -149,8 +189,8 @@ def _redraw():
                 area.tag_redraw()
 
 
-def _run(tree, targets, size):
-    ev, note = get_evaluator(tree)
+def _run(tree, targets, size, quality="full"):
+    ev, note = get_evaluator(tree, quality)
     specs, _ = extract_graph(tree)
     try:
         results = ev.evaluate(specs, targets, size)
@@ -165,23 +205,29 @@ def _run(tree, targets, size):
         ev.clear()
         cpu = Evaluator(CPUBackend())
         note = f"GPU failed, using CPU: {exc}"
-        _evaluators[tree.name] = (cpu, note, tree.backend)
+        _evaluators[(tree.name, quality)] = (cpu, note, tree.backend)
         return cpu, cpu.evaluate(specs, targets, size), note
 
 
-def evaluate_tree(tree, force=False):
-    """Evaluate every Output node and write one image per channel. Only
-    outputs whose result changed are copied into their image unless force.
-    Returns {channel: image}."""
+def evaluate_tree(tree, force=False, draft=False):
+    """Evaluate every Output node and write one image per channel.
+
+    Only outputs whose content changed are copied back from the GPU, which is
+    the expensive step. With draft=True the graph runs at the draft
+    resolution and only changed outputs drop to it; the full-resolution pass
+    afterwards restores them. Returns {channel: image}."""
     global _busy
     st = status(tree)
     start = time.perf_counter()
-    size = (int(tree.resolution), int(tree.resolution))
+    full = int(tree.resolution)
+    side = (draft_size(tree) or full) if draft else full
+    draft = side != full
+    size = (side, side)
     images = {}
     _busy = True
     try:
         _, outputs = extract_graph(tree)
-        ev, results, note = _run(tree, [o.name for o in outputs], size)
+        ev, results, note = _run(tree, [o.name for o in outputs], size, "draft" if draft else "full")
         graph_done = time.perf_counter()
         readback = write = 0.0
         written = 0
@@ -189,7 +235,15 @@ def evaluate_tree(tree, force=False):
             buf, _ = results[node.name]
             name = image_name(tree, node.channel)
             img = bpy.data.images.get(name)
-            if force or node.name in ev.ran or img is None or tuple(img.size) != size:
+            content = ev.content_keys[node.name]
+            previous = _written.get((tree.name, node.channel))
+            if img is None or previous is None:
+                stale = True
+            elif draft:
+                stale = previous[0] != content
+            else:
+                stale = previous != (content, False) or tuple(img.size) != size
+            if force or stale:
                 t0 = time.perf_counter()
                 pixels = ev.backend.to_numpy(buf)
                 t1 = time.perf_counter()
@@ -198,11 +252,12 @@ def evaluate_tree(tree, force=False):
                 readback += t1 - t0
                 write += time.perf_counter() - t1
                 written += 1
+                _written[(tree.name, node.channel)] = (content, draft)
             images[node.channel] = img
-        st.update(backend=ev.backend.name, nodes=len(ev.ran), error=note, images=written,
+        st.update(backend=ev.backend.name, nodes=len(ev.ran), error=note, images=written, draft=draft, size=side,
                   graph_ms=(graph_done - start) * 1000.0, readback_ms=readback * 1000.0, write_ms=write * 1000.0)
         if getattr(ev.backend, "slow_readback", False):
-            st["error"] = (note + " " if note else "") + "Slow GPU readback path in use."
+            st["error"] = (note + " " if note else "") + "Using the fallback GPU readback (details in the system console)."
     except Exception as exc:
         traceback.print_exc()
         st["error"] = str(exc)
@@ -256,6 +311,7 @@ def unregister():
     for handlers in (bpy.app.handlers.load_post, bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
         if _on_load in handlers:
             handlers.remove(_on_load)
-    if bpy.app.timers.is_registered(_run_pending):
-        bpy.app.timers.unregister(_run_pending)
+    for timer in (_run_pending, _settle):
+        if bpy.app.timers.is_registered(timer):
+            bpy.app.timers.unregister(timer)
     clear_all()
