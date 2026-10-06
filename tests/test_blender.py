@@ -160,3 +160,33 @@ def test_scheduler_runs_draft_then_full(tree):
     for timer in (evaluate._run_pending, evaluate._settle):
         if bpy.app.timers.is_registered(timer):
             bpy.app.timers.unregister(timer)
+
+
+def test_thumbnails_for_every_node_refresh_only_changed(tree):
+    from pbr_texture_graph import thumbnails
+
+    evaluate.evaluate_tree(tree)
+    st = evaluate.status(tree)
+    assert st["thumbs"] == len(tree.nodes)
+    for node in tree.nodes:
+        # Icons only get ids with a UI; headless, check the stored pixels.
+        preview = thumbnails.get(tree, node.name)
+        assert preview is not None and tuple(preview.image_size) == (128, 128), node.name
+    tree.nodes["Normal"].intensity = 6.0
+    evaluate.evaluate_tree(tree)
+    assert st["thumbs"] == 2  # Normal and its Output
+
+
+def test_unconnected_node_still_gets_a_thumbnail(tree):
+    from pbr_texture_graph import thumbnails
+
+    lone = tree.nodes.new("PTGNodePerlin")
+    evaluate.evaluate_tree(tree)
+    assert thumbnails.get(tree, lone.name) is not None
+
+
+def test_thumbnails_off_skips_unconnected_nodes(tree):
+    tree.show_thumbnails = False
+    tree.nodes.new("PTGNodePerlin")
+    evaluate.evaluate_tree(tree)
+    assert evaluate.status(tree)["thumbs"] == 0

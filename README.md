@@ -2,7 +2,7 @@
 
 A Substance Designer-style node editor inside Blender that generates tileable PBR texture maps, aimed at stylized, hand-painted game assets.
 
-Status: Phase 1 prototype. Targets Blender 4.5 LTS (works on 4.2+).
+Status: Phase 2 (MVP) in progress. Targets Blender 4.5 LTS (works on 4.2+).
 
 ## Install
 
@@ -15,7 +15,7 @@ Status: Phase 1 prototype. Targets Blender 4.5 LTS (works on 4.2+).
 2. Open the sidebar (N), go to the **Texture Graph** tab and click **New Example Graph**.
 3. Select a mesh and click **Create Material**. Switch the 3D viewport to Material Preview.
 4. Tweak any node; the material updates live. The sidebar shows how long the last update took and whether it ran on the GPU or CPU.
-5. Select a node and click **View Active Node** to see its output in an Image Editor.
+5. Every node shows a thumbnail of its result (toggle with **Thumbnails** in the sidebar). Select a node and click **View Active Node** to see it full size in an Image Editor.
 
 ## Nodes
 
@@ -27,6 +27,9 @@ Status: Phase 1 prototype. Targets Blender 4.5 LTS (works on 4.2+).
 | Levels | Input range, gamma and output range |
 | Gradient Map | Grayscale to color through three stops |
 | Normal | Normal map from height (OpenGL or DirectX) |
+| Height to Light | Paints directional light and cavity shading into a base color from height |
+| Edge Highlight | Bright painted rims on raised edges |
+| Posterize | Quantizes values into flat bands |
 | Output | Sends its input to a material channel (Base Color, Roughness, Metallic, Normal, Height, AO, Emission) |
 
 ## How it works

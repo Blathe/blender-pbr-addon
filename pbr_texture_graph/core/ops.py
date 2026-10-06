@@ -475,3 +475,203 @@ void main() {
 }
 """,
 ))
+
+
+# ---------------------------------------------------------------------------
+# Stylized nodes
+# ---------------------------------------------------------------------------
+
+def _sobel(g, size):
+    """Wrapped Sobel slope of a (h, w) height array, per uv unit / 8."""
+    w, h = size
+
+    def s(dx, dy):
+        return np.roll(np.roll(g, -dy, axis=0), -dx, axis=1)
+
+    gx = (s(1, -1) + 2 * s(1, 0) + s(1, 1)) - (s(-1, -1) + 2 * s(-1, 0) + s(-1, 1))
+    gy = (s(-1, 1) + 2 * s(0, 1) + s(1, 1)) - (s(-1, -1) + 2 * s(0, -1) + s(1, -1))
+    return gx / 8.0 * w, gy / 8.0 * h
+
+
+# Reads the op's in_height sampler; samplers are not passed as arguments to
+# stay portable across Blender's GPU backends.
+GLSL_SOBEL = """
+float sob_h(ivec2 p) { return ptg_luma(texelFetch(in_height, ptg_wrap(p), 0)); }
+vec2 sobel_slope() {
+  ivec2 p = ptg_px();
+  float gx = (sob_h(p + ivec2(1, -1)) + 2.0 * sob_h(p + ivec2(1, 0)) + sob_h(p + ivec2(1, 1)))
+           - (sob_h(p + ivec2(-1, -1)) + 2.0 * sob_h(p + ivec2(-1, 0)) + sob_h(p + ivec2(-1, 1)));
+  float gy = (sob_h(p + ivec2(-1, 1)) + 2.0 * sob_h(p + ivec2(0, 1)) + sob_h(p + ivec2(1, 1)))
+           - (sob_h(p + ivec2(-1, -1)) + 2.0 * sob_h(p + ivec2(0, -1)) + sob_h(p + ivec2(1, -1)));
+  return vec2(gx / 8.0 * float(ptg_size.x), gy / 8.0 * float(ptg_size.y));
+}
+"""
+
+
+def _base_or_gray(base, size, value):
+    if base is not None:
+        return to_rgba(base)
+    w, h = size
+    out = np.full((h, w, 4), value, dtype=np.float32)
+    out[:, :, 3] = 1.0
+    return out
+
+
+# Posterize: quantize values into a few flat bands
+
+def _posterize_cpu(inputs, p, size):
+    src = inputs["input"]
+    if src is None:
+        return gray(np.zeros((size[1], size[0]), dtype=np.float32))
+    steps = max(2, int(p["steps"]))
+    rgb = src if src.shape[2] == 1 else src[:, :, :3]
+    q = np.minimum(np.floor(np.clip(rgb, 0.0, 1.0) * steps), steps - 1) / (steps - 1)
+    if src.shape[2] == 1:
+        return q.astype(np.float32)
+    out = src.copy()
+    out[:, :, :3] = q
+    return out
+
+
+register_op(OpDef(
+    id="POSTERIZE",
+    inputs=["input"],
+    output=SAME,
+    params=[Param("steps", "int", 4)],
+    cpu=_posterize_cpu,
+    glsl="""
+void main() {
+  if (has_input == 0) { fragColor = ptg_gray(0.0); return; }
+  vec4 c = texelFetch(in_input, ptg_px(), 0);
+  float steps = float(max(2, p_steps));
+  vec3 q = min(floor(clamp(c.rgb, 0.0, 1.0) * steps), vec3(steps - 1.0)) / (steps - 1.0);
+  fragColor = vec4(q, c.a);
+}
+""",
+))
+
+
+# Height to Light: paints directional light and cavity darkening into base
+# color from a height map. Flat areas keep their color.
+
+def _height_to_light_cpu(inputs, p, size):
+    base = _base_or_gray(inputs["base"], size, 0.5)
+    src = inputs["height"]
+    if src is None:
+        return base
+    hgt = to_gray(src)
+    sx, sy = _sobel(hgt, size)
+    k = float(p["depth"]) / 32.0
+    nx, ny, nz = -sx * k, -sy * k, np.ones_like(hgt)
+    length = np.sqrt(nx * nx + ny * ny + 1.0)
+    az, el = np.radians(float(p["angle"])), np.radians(min(max(float(p["elevation"]), 1.0), 90.0))
+    lx, ly, lz = np.cos(az) * np.cos(el), np.sin(az) * np.cos(el), np.sin(el)
+    lam = np.clip((nx * lx + ny * ly + nz * lz) / length, 0.0, None) / lz
+    shade = 1.0 + (lam - 1.0) * float(p["light"])
+    cavity = 1.0 - float(p["cavity"]) * (1.0 - hgt)
+    out = base.copy()
+    out[:, :, :3] = np.clip(base[:, :, :3] * (shade * cavity)[:, :, None], 0.0, 1.0)
+    return out
+
+
+register_op(OpDef(
+    id="HEIGHT_TO_LIGHT",
+    inputs=["height", "base"],
+    output=COLOR,
+    params=[
+        Param("angle", "float", 135.0),
+        Param("elevation", "float", 45.0),
+        Param("depth", "float", 1.0),
+        Param("light", "float", 0.6),
+        Param("cavity", "float", 0.4),
+    ],
+    cpu=_height_to_light_cpu,
+    glsl=GLSL_SOBEL + """
+void main() {
+  vec4 base = has_base != 0 ? texelFetch(in_base, ptg_px(), 0) : vec4(0.5, 0.5, 0.5, 1.0);
+  if (has_height == 0) { fragColor = base; return; }
+  float h = ptg_luma(texelFetch(in_height, ptg_px(), 0));
+  vec2 s = sobel_slope() * (p_depth / 32.0);
+  vec3 n = normalize(vec3(-s, 1.0));
+  float az = radians(p_angle), el = radians(clamp(p_elevation, 1.0, 90.0));
+  vec3 l = vec3(cos(az) * cos(el), sin(az) * cos(el), sin(el));
+  float lam = max(dot(n, l), 0.0) / l.z;
+  float shade = 1.0 + (lam - 1.0) * p_light;
+  float cavity = 1.0 - p_cavity * (1.0 - h);
+  fragColor = vec4(clamp(base.rgb * shade * cavity, 0.0, 1.0), 1.0);
+}
+""",
+))
+
+
+# Edge Highlight: bright painted rims where the height is convex (higher
+# than its surroundings), measured over a radius relative to the texture.
+
+EDGE_DIRS = [(np.cos(a), np.sin(a)) for a in np.linspace(0, 2 * np.pi, 8, endpoint=False)]
+
+
+def _edge_offsets(radius_px):
+    offs = []
+    for r in (radius_px, radius_px * 0.5):
+        for cx, cy in EDGE_DIRS:
+            offs.append((int(np.floor(cx * r + 0.5)), int(np.floor(cy * r + 0.5))))
+    return offs
+
+
+def _edge_mask(hgt, p, size):
+    radius = max(1.0, float(p["width"]) * size[0])
+    offs = _edge_offsets(radius)
+    avg = sum(np.roll(np.roll(hgt, -dy, axis=0), -dx, axis=1) for dx, dy in offs) / len(offs)
+    conv = hgt - avg
+    lo = float(p["threshold"])
+    t = np.clip((conv - lo) / max(float(p["softness"]), 1e-4), 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
+def _edge_highlight_cpu(inputs, p, size):
+    base = _base_or_gray(inputs["base"], size, 0.0)
+    src = inputs["height"]
+    if src is None:
+        return base
+    mask = _edge_mask(to_gray(src), p, size) * float(p["strength"])
+    color = np.asarray(p["color"], dtype=np.float32)[:3]
+    out = base.copy()
+    out[:, :, :3] = np.clip(base[:, :, :3] + (color - base[:, :, :3]) * mask[:, :, None], 0.0, 1.0)
+    return out
+
+
+register_op(OpDef(
+    id="EDGE_HIGHLIGHT",
+    inputs=["height", "base"],
+    output=COLOR,
+    params=[
+        Param("color", "color", (1.0, 0.9, 0.7, 1.0)),
+        Param("width", "float", 0.01),
+        Param("threshold", "float", 0.01),
+        Param("softness", "float", 0.05),
+        Param("strength", "float", 1.0),
+    ],
+    cpu=_edge_highlight_cpu,
+    glsl="""
+void main() {
+  vec4 base = has_base != 0 ? texelFetch(in_base, ptg_px(), 0) : vec4(0.0, 0.0, 0.0, 1.0);
+  if (has_height == 0) { fragColor = base; return; }
+  ivec2 p = ptg_px();
+  float h = ptg_luma(texelFetch(in_height, p, 0));
+  float radius = max(1.0, p_width * float(ptg_size.x));
+  float sum = 0.0;
+  for (int ring = 0; ring < 2; ring++) {
+    float r = ring == 0 ? radius : radius * 0.5;
+    for (int i = 0; i < 8; i++) {
+      float a = 6.283185307179586 * float(i) / 8.0;
+      ivec2 o = ivec2(floor(cos(a) * r + 0.5), floor(sin(a) * r + 0.5));
+      sum += ptg_luma(texelFetch(in_height, ptg_wrap(p + o), 0));
+    }
+  }
+  float conv = h - sum / 16.0;
+  float t = clamp((conv - p_threshold) / max(p_softness, 1e-4), 0.0, 1.0);
+  float mask = t * t * (3.0 - 2.0 * t) * p_strength;
+  fragColor = vec4(clamp(mix(base.rgb, p_color.rgb, mask), 0.0, 1.0), 1.0);
+}
+""",
+))
