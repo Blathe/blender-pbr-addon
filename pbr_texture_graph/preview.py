@@ -18,9 +18,9 @@ def _plane(bm):
             loop[uv].uv = ((co.x + 1) / 2, (co.y + 1) / 2)
 
 
-def _cube(bm):
+def _cube(bm, cuts=15):
     bmesh.ops.create_cube(bm, size=2.0)
-    bmesh.ops.subdivide_edges(bm, edges=bm.edges[:], cuts=15, use_grid_fill=True)
+    bmesh.ops.subdivide_edges(bm, edges=bm.edges[:], cuts=cuts, use_grid_fill=True)
     bm.normal_update()
     uv = bm.loops.layers.uv.verify()
     for face in bm.faces:
@@ -39,13 +39,19 @@ def _cube(bm):
 
 
 def _sphere(bm):
-    uv = bm.loops.layers.uv.verify()  # calc_uvs needs the layer up front
-    bmesh.ops.create_uvsphere(bm, u_segments=64, v_segments=32, radius=1.0, calc_uvs=True)
+    """A cube pushed out to a sphere: no poles, so tiles don't pinch, and
+    each of the six patches is one undistorted-looking tile."""
+    _cube(bm, cuts=31)
+    for vert in bm.verts:
+        x, y, z = vert.co
+        # Spherified cube mapping, which spaces vertices far more evenly
+        # than normalizing.
+        vert.co = (x * math.sqrt(1 - y * y / 2 - z * z / 2 + y * y * z * z / 3),
+                   y * math.sqrt(1 - z * z / 2 - x * x / 2 + z * z * x * x / 3),
+                   z * math.sqrt(1 - x * x / 2 - y * y / 2 + x * x * y * y / 3))
     for face in bm.faces:
         face.smooth = True
-        for loop in face.loops:
-            u, v = loop[uv].uv
-            loop[uv].uv = (u * 2, v)  # circumference is twice the pole-to-pole arc
+    bm.normal_update()
 
 
 def _cylinder(bm):

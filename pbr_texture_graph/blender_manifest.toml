@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "pbr_texture_graph"
-version = "0.5.0"
+version = "0.5.1"
 name = "PBR Texture Graph"
 tagline = "Node-based PBR texture generator for stylized materials"
 maintainer = "Blathe"
