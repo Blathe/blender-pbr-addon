@@ -675,3 +675,352 @@ void main() {
 }
 """,
 ))
+
+
+# ---------------------------------------------------------------------------
+# MVP generators and filters
+# ---------------------------------------------------------------------------
+
+def hash01(x):
+    return hash_u32(x).astype(np.float64) / 4294967296.0
+
+
+def bilinear(img, u, v):
+    """Sample an (h, w, c) image at uv arrays with wrap-around."""
+    h, w = img.shape[:2]
+    x = u * w - 0.5
+    y = v * h - 0.5
+    x0 = np.floor(x).astype(np.int64)
+    y0 = np.floor(y).astype(np.int64)
+    fx = (x - x0)[..., None]
+    fy = (y - y0)[..., None]
+    x0, y0 = x0 % w, y0 % h
+    x1, y1 = (x0 + 1) % w, (y0 + 1) % h
+    top = img[y0, x0] * (1 - fx) + img[y0, x1] * fx
+    bottom = img[y1, x0] * (1 - fx) + img[y1, x1] * fx
+    return (top * (1 - fy) + bottom * fy).astype(np.float32)
+
+
+GLSL_BILINEAR = """
+vec4 ptg_bilinear(sampler2D t, vec2 uv) {
+  vec2 x = uv * vec2(ptg_size) - 0.5;
+  ivec2 i0 = ivec2(floor(x));
+  vec2 f = x - vec2(i0);
+  vec4 a = texelFetch(t, ptg_wrap(i0), 0);
+  vec4 b = texelFetch(t, ptg_wrap(i0 + ivec2(1, 0)), 0);
+  vec4 c = texelFetch(t, ptg_wrap(i0 + ivec2(0, 1)), 0);
+  vec4 d = texelFetch(t, ptg_wrap(i0 + ivec2(1, 1)), 0);
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+"""
+
+
+# Voronoi (Worley) noise, tileable: cell coordinates wrap at the scale.
+
+VORONOI_MODES = ("F1", "F2", "EDGES", "CELLS")
+
+
+def _voronoi_cpu(inputs, p, size):
+    u, v = uv_grid(size)
+    n = max(1, int(p["scale"]))
+    seed = np.uint32(int(p["seed"]) & 0xFFFFFFFF)
+    rnd = float(p["randomness"])
+    px, py = u * n, v * n
+    cx, cy = np.floor(px).astype(np.int64), np.floor(py).astype(np.int64)
+    f1 = np.full(u.shape, 9.0)
+    f2 = np.full(u.shape, 9.0)
+    cell = np.zeros(u.shape)
+    for oy in (-1, 0, 1):
+        for ox in (-1, 0, 1):
+            nx, ny = cx + ox, cy + oy
+            h1 = hash_u32((nx % n).astype(np.uint32) + hash_u32((ny % n).astype(np.uint32) + seed))
+            h2 = hash_u32(h1)
+            fx = nx + 0.5 + (h1.astype(np.float64) / 4294967296.0 - 0.5) * rnd
+            fy = ny + 0.5 + (h2.astype(np.float64) / 4294967296.0 - 0.5) * rnd
+            d = np.sqrt((fx - px) ** 2 + (fy - py) ** 2)
+            closer = d < f1
+            f2 = np.where(closer, f1, np.minimum(f2, d))
+            cell = np.where(closer, hash_u32(h2).astype(np.float64) / 4294967296.0, cell)
+            f1 = np.where(closer, d, f1)
+    mode = int(p["mode"])
+    if mode == 0:
+        out = f1
+    elif mode == 1:
+        out = f2 / 1.5
+    elif mode == 2:
+        out = (f2 - f1) * 2.0
+    else:
+        out = cell
+    return gray(np.clip(out, 0.0, 1.0))
+
+
+register_op(OpDef(
+    id="VORONOI",
+    inputs=[],
+    output=GRAY,
+    params=[
+        Param("scale", "int", 6),
+        Param("mode", "int", 0),
+        Param("randomness", "float", 1.0),
+        Param("seed", "int", 0),
+    ],
+    cpu=_voronoi_cpu,
+    glsl="""
+void main() {
+  int n = max(1, p_scale);
+  vec2 pt = ptg_uv() * float(n);
+  ivec2 c = ivec2(floor(pt));
+  float f1 = 9.0, f2 = 9.0, cell = 0.0;
+  for (int oy = -1; oy <= 1; oy++) {
+    for (int ox = -1; ox <= 1; ox++) {
+      ivec2 nc = c + ivec2(ox, oy);
+      ivec2 wc = ((nc % n) + n) % n;
+      uint h1 = ptg_hash(uint(wc.x) + ptg_hash(uint(wc.y) + uint(p_seed)));
+      uint h2 = ptg_hash(h1);
+      vec2 fp = vec2(nc) + 0.5 + (vec2(float(h1), float(h2)) / 4294967296.0 - 0.5) * p_randomness;
+      float d = length(fp - pt);
+      if (d < f1) {
+        f2 = f1;
+        f1 = d;
+        cell = float(ptg_hash(h2)) / 4294967296.0;
+      } else {
+        f2 = min(f2, d);
+      }
+    }
+  }
+  float o;
+  if (p_mode == 0) o = f1;
+  else if (p_mode == 1) o = f2 / 1.5;
+  else if (p_mode == 2) o = (f2 - f1) * 2.0;
+  else o = cell;
+  fragColor = ptg_gray(clamp(o, 0.0, 1.0));
+}
+""",
+))
+
+
+# Tile Generator: bricks or tiles with gaps, bevels and per-tile height.
+# Seamless vertically when offset * tiles_y is a whole number.
+
+def _tile_cpu(inputs, p, size):
+    u, v = uv_grid(size)
+    tx, ty = max(1, int(p["tiles_x"])), max(1, int(p["tiles_y"]))
+    row = np.floor(v * ty)
+    su = u * tx + float(p["offset"]) * row
+    col = np.mod(np.floor(su), tx)
+    lu, lv = su - np.floor(su), v * ty - row
+    ex = np.minimum(lu, 1 - lu) / tx
+    ey = np.minimum(lv, 1 - lv) / ty
+    e = np.minimum(ex, ey)
+    cs = min(1.0 / tx, 1.0 / ty)
+    g = float(p["gap"]) * cs * 0.5
+    b = max(float(p["bevel"]) * cs, 1e-5)
+    t = np.clip((e - g) / b, 0.0, 1.0)
+    mask = t * t * (3 - 2 * t)
+    seed = np.uint32(int(p["seed"]) & 0xFFFFFFFF)
+    r = hash01(col.astype(np.uint32) + hash_u32(np.mod(row, ty).astype(np.uint32) + seed))
+    return gray(mask * (1.0 - float(p["variation"]) * r))
+
+
+register_op(OpDef(
+    id="TILE",
+    inputs=[],
+    output=GRAY,
+    params=[
+        Param("tiles_x", "int", 4),
+        Param("tiles_y", "int", 8),
+        Param("offset", "float", 0.5),
+        Param("gap", "float", 0.08),
+        Param("bevel", "float", 0.15),
+        Param("variation", "float", 0.3),
+        Param("seed", "int", 0),
+    ],
+    cpu=_tile_cpu,
+    glsl="""
+void main() {
+  vec2 uv = ptg_uv();
+  int tx = max(1, p_tiles_x), ty = max(1, p_tiles_y);
+  float row = floor(uv.y * float(ty));
+  float su = uv.x * float(tx) + p_offset * row;
+  float col = mod(floor(su), float(tx));
+  float lu = su - floor(su), lv = uv.y * float(ty) - row;
+  float e = min(min(lu, 1.0 - lu) / float(tx), min(lv, 1.0 - lv) / float(ty));
+  float cs = min(1.0 / float(tx), 1.0 / float(ty));
+  float g = p_gap * cs * 0.5;
+  float b = max(p_bevel * cs, 1e-5);
+  float t = clamp((e - g) / b, 0.0, 1.0);
+  float mask = t * t * (3.0 - 2.0 * t);
+  uint h = ptg_hash(uint(col) + ptg_hash(uint(mod(row, float(ty))) + uint(p_seed)));
+  float r = float(h) / 4294967296.0;
+  fragColor = ptg_gray(mask * (1.0 - p_variation * r));
+}
+""",
+))
+
+
+# Gradient: linear (sawtooth), mirrored (seamless along its axis) or radial.
+
+GRADIENT_MODES = ("LINEAR", "MIRRORED", "RADIAL")
+
+
+def _gradient_cpu(inputs, p, size):
+    u, v = uv_grid(size)
+    a = np.radians(float(p["angle"]))
+    x = (u * np.cos(a) + v * np.sin(a)) * max(1, int(p["repeat"]))
+    mode = int(p["mode"])
+    if mode == 0:
+        out = x - np.floor(x)
+    elif mode == 1:
+        out = 1.0 - np.abs(2.0 * (x - np.floor(x)) - 1.0)
+    else:
+        out = np.clip(1.0 - np.sqrt((u - 0.5) ** 2 + (v - 0.5) ** 2) * 2.0, 0.0, 1.0)
+    return gray(out)
+
+
+register_op(OpDef(
+    id="GRADIENT",
+    inputs=[],
+    output=GRAY,
+    params=[Param("mode", "int", 0), Param("angle", "float", 0.0), Param("repeat", "int", 1)],
+    cpu=_gradient_cpu,
+    glsl="""
+void main() {
+  vec2 uv = ptg_uv();
+  float a = radians(p_angle);
+  float x = dot(uv, vec2(cos(a), sin(a))) * float(max(1, p_repeat));
+  float o;
+  if (p_mode == 0) o = fract(x);
+  else if (p_mode == 1) o = 1.0 - abs(2.0 * fract(x) - 1.0);
+  else o = clamp(1.0 - length(uv - 0.5) * 2.0, 0.0, 1.0);
+  fragColor = ptg_gray(o);
+}
+""",
+))
+
+
+# Blur: Gaussian over a 9 x 9 grid of bilinear taps spanning the radius.
+
+BLUR_TAPS = 4  # taps on each side of the centre
+
+
+def _blur_weights():
+    k = np.arange(-BLUR_TAPS, BLUR_TAPS + 1) / BLUR_TAPS
+    w = np.exp(-2.0 * k * k)
+    return k, w / w.sum()
+
+
+def _blur_cpu(inputs, p, size):
+    src = inputs["input"]
+    if src is None:
+        return gray(np.zeros((size[1], size[0]), dtype=np.float32))
+    radius = float(p["radius"])
+    if radius <= 0.0:
+        return src
+    u, v = uv_grid(size)
+    k, w = _blur_weights()
+    tmp = sum(wi * bilinear(src, u + ki * radius, v) for ki, wi in zip(k, w))
+    return sum(wi * bilinear(tmp, u, v + ki * radius * size[0] / size[1]) for ki, wi in zip(k, w)).astype(np.float32)
+
+
+register_op(OpDef(
+    id="BLUR",
+    inputs=["input"],
+    output=SAME,
+    params=[Param("radius", "float", 0.01)],
+    cpu=_blur_cpu,
+    glsl=GLSL_BILINEAR + """
+void main() {
+  if (has_input == 0) { fragColor = ptg_gray(0.0); return; }
+  vec2 uv = ptg_uv();
+  if (p_radius <= 0.0) { fragColor = texelFetch(in_input, ptg_px(), 0); return; }
+  vec2 stp = vec2(p_radius, p_radius * float(ptg_size.x) / float(ptg_size.y)) / 4.0;
+  float wsum = 0.0;
+  for (int i = -4; i <= 4; i++) wsum += exp(-2.0 * float(i * i) / 16.0);
+  vec4 acc = vec4(0.0);
+  for (int j = -4; j <= 4; j++) {
+    float wj = exp(-2.0 * float(j * j) / 16.0) / wsum;
+    for (int i = -4; i <= 4; i++) {
+      float wi = exp(-2.0 * float(i * i) / 16.0) / wsum;
+      acc += wi * wj * ptg_bilinear(in_input, uv + vec2(float(i), float(j)) * stp);
+    }
+  }
+  fragColor = acc;
+}
+""",
+))
+
+
+# Warp: push the input along the slope of a warp map.
+
+def _warp_cpu(inputs, p, size):
+    src, warp = inputs["input"], inputs["warp"]
+    if src is None:
+        return gray(np.zeros((size[1], size[0]), dtype=np.float32))
+    if warp is None:
+        return src
+    w, h = size
+    g = to_gray(warp)
+    dx = (np.roll(g, -1, axis=1) - np.roll(g, 1, axis=1)) * 0.5 * w
+    dy = (np.roll(g, -1, axis=0) - np.roll(g, 1, axis=0)) * 0.5 * h
+    k = float(p["intensity"]) * 0.01
+    u, v = uv_grid(size)
+    return bilinear(src, u + dx * k, v + dy * k)
+
+
+register_op(OpDef(
+    id="WARP",
+    inputs=["input", "warp"],
+    output=SAME,
+    params=[Param("intensity", "float", 0.2)],
+    cpu=_warp_cpu,
+    glsl=GLSL_BILINEAR + """
+float wv(ivec2 p) { return ptg_luma(texelFetch(in_warp, ptg_wrap(p), 0)); }
+void main() {
+  if (has_input == 0) { fragColor = ptg_gray(0.0); return; }
+  if (has_warp == 0) { fragColor = texelFetch(in_input, ptg_px(), 0); return; }
+  ivec2 p = ptg_px();
+  vec2 d = vec2((wv(p + ivec2(1, 0)) - wv(p - ivec2(1, 0))) * 0.5 * float(ptg_size.x),
+                (wv(p + ivec2(0, 1)) - wv(p - ivec2(0, 1))) * 0.5 * float(ptg_size.y));
+  fragColor = ptg_bilinear(in_input, ptg_uv() + d * p_intensity * 0.01);
+}
+""",
+))
+
+
+# Transform: offset, rotate and tile the input. Stays seamless for whole
+# tilings and rotations in steps of 90 degrees.
+
+def _transform_cpu(inputs, p, size):
+    src = inputs["input"]
+    if src is None:
+        return gray(np.zeros((size[1], size[0]), dtype=np.float32))
+    u, v = uv_grid(size)
+    a = np.radians(float(p["rotation"]))
+    qx, qy = u - 0.5 - float(p["offset_x"]), v - 0.5 - float(p["offset_y"])
+    rx = qx * np.cos(a) + qy * np.sin(a)
+    ry = -qx * np.sin(a) + qy * np.cos(a)
+    t = max(1, int(p["tiling"]))
+    return bilinear(src, (rx + 0.5) * t, (ry + 0.5) * t)
+
+
+register_op(OpDef(
+    id="TRANSFORM",
+    inputs=["input"],
+    output=SAME,
+    params=[
+        Param("offset_x", "float", 0.0),
+        Param("offset_y", "float", 0.0),
+        Param("rotation", "float", 0.0),
+        Param("tiling", "int", 1),
+    ],
+    cpu=_transform_cpu,
+    glsl=GLSL_BILINEAR + """
+void main() {
+  if (has_input == 0) { fragColor = ptg_gray(0.0); return; }
+  float a = radians(p_rotation);
+  vec2 q = ptg_uv() - 0.5 - vec2(p_offset_x, p_offset_y);
+  vec2 r = vec2(q.x * cos(a) + q.y * sin(a), -q.x * sin(a) + q.y * cos(a));
+  fragColor = ptg_bilinear(in_input, (r + 0.5) * float(max(1, p_tiling)));
+}
+""",
+))

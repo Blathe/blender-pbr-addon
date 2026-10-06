@@ -190,3 +190,19 @@ def test_thumbnails_off_skips_unconnected_nodes(tree):
     tree.nodes.new("PTGNodePerlin")
     evaluate.evaluate_tree(tree)
     assert evaluate.status(tree)["thumbs"] == 0
+
+
+@pytest.mark.parametrize("idname", [
+    "PTGNodeVoronoi", "PTGNodeTile", "PTGNodeGradient", "PTGNodeBlur", "PTGNodeWarp", "PTGNodeTransform",
+])
+def test_new_nodes_evaluate_into_an_output(tree, idname):
+    node = tree.nodes.new(idname)
+    out = next(n for n in tree.nodes if n.bl_idname == "PTGNodeOutput" and n.channel == "HEIGHT")
+    if node.inputs:
+        tree.links.new(tree.nodes["Levels"].outputs[0], node.inputs[0])
+    tree.links.new(node.outputs[0], out.inputs[0])
+    images = evaluate.evaluate_tree(tree)
+    assert not evaluate.status(tree)["error"].startswith("Unknown")
+    px = np.empty(256 * 256 * 4, dtype=np.float32)
+    images["HEIGHT"].pixels.foreach_get(px)
+    assert px.std() > 0.005, idname

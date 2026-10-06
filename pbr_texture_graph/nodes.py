@@ -220,6 +220,107 @@ class PTGNodeGradientMap(PTGNode, Node):
     mid_position: FloatProperty(name="Mid Position", default=0.5, min=0.0, max=1.0, update=_changed)
 
 
+class PTGNodeVoronoi(PTGNode, Node):
+    """Tileable Voronoi (cellular) noise"""
+    bl_idname = "PTGNodeVoronoi"
+    bl_label = "Voronoi"
+    op_id = "VORONOI"
+    modes = ["F1", "F2", "EDGES", "CELLS"]
+    enums = {"mode": modes}
+    out_socket = ("PTGSocketGray", "Noise")
+
+    scale: IntProperty(name="Scale", default=6, min=1, max=64, update=_changed)
+    mode: EnumProperty(
+        name="Mode",
+        items=[
+            ("F1", "Distance", "Distance to the nearest point"),
+            ("F2", "Second Distance", "Distance to the second nearest point"),
+            ("EDGES", "Edges", "Lines between cells"),
+            ("CELLS", "Cells", "A random flat value per cell"),
+        ],
+        update=_changed,
+    )
+    randomness: FloatProperty(name="Randomness", default=1.0, min=0.0, max=1.0, update=_changed)
+    seed: IntProperty(name="Seed", default=0, min=0, update=_changed)
+
+
+class PTGNodeTile(PTGNode, Node):
+    """Bricks or tiles with gaps, bevels and per-tile height"""
+    bl_idname = "PTGNodeTile"
+    bl_label = "Tile Generator"
+    op_id = "TILE"
+    out_socket = ("PTGSocketGray", "Height")
+
+    tiles_x: IntProperty(name="Tiles X", default=4, min=1, max=64, update=_changed)
+    tiles_y: IntProperty(name="Tiles Y", default=8, min=1, max=64, update=_changed)
+    offset: FloatProperty(name="Row Offset", default=0.5, min=0.0, max=1.0, update=_changed,
+                          description="Shift each row; stays seamless when offset x Tiles Y is a whole number")
+    gap: FloatProperty(name="Gap", default=0.08, min=0.0, max=0.9, update=_changed)
+    bevel: FloatProperty(name="Bevel", default=0.15, min=0.0, max=0.5, update=_changed)
+    variation: FloatProperty(name="Height Variation", default=0.3, min=0.0, max=1.0, update=_changed)
+    seed: IntProperty(name="Seed", default=0, min=0, update=_changed)
+
+
+class PTGNodeGradient(PTGNode, Node):
+    """Linear, mirrored or radial gradient"""
+    bl_idname = "PTGNodeGradient"
+    bl_label = "Gradient"
+    op_id = "GRADIENT"
+    modes = ["LINEAR", "MIRRORED", "RADIAL"]
+    enums = {"mode": modes}
+    out_socket = ("PTGSocketGray", "Gradient")
+
+    mode: EnumProperty(
+        name="Mode",
+        items=[
+            ("LINEAR", "Linear", "Ramp that restarts at each repeat"),
+            ("MIRRORED", "Mirrored", "Ramp up and down; seamless along its axis"),
+            ("RADIAL", "Radial", "Bright centre fading outward"),
+        ],
+        update=_changed,
+    )
+    angle: FloatProperty(name="Angle", default=0.0, min=0.0, max=360.0, update=_changed)
+    repeat: IntProperty(name="Repeat", default=1, min=1, max=64, update=_changed)
+
+
+class PTGNodeBlur(PTGNode, Node):
+    """Gaussian blur"""
+    bl_idname = "PTGNodeBlur"
+    bl_label = "Blur"
+    op_id = "BLUR"
+    in_sockets = (("PTGSocketColor", "Input"),)
+    out_socket = ("PTGSocketColor", "Result")
+
+    radius: FloatProperty(name="Radius", default=0.01, min=0.0, max=0.25, precision=3, update=_changed,
+                          description="Blur radius as a fraction of the texture")
+
+
+class PTGNodeWarp(PTGNode, Node):
+    """Push the input along the slopes of a warp map"""
+    bl_idname = "PTGNodeWarp"
+    bl_label = "Warp"
+    op_id = "WARP"
+    in_sockets = (("PTGSocketColor", "Input"), ("PTGSocketGray", "Warp"))
+    out_socket = ("PTGSocketColor", "Result")
+
+    intensity: FloatProperty(name="Intensity", default=0.2, min=0.0, max=5.0, update=_changed)
+
+
+class PTGNodeTransform(PTGNode, Node):
+    """Offset, rotate and tile the input"""
+    bl_idname = "PTGNodeTransform"
+    bl_label = "Transform"
+    op_id = "TRANSFORM"
+    in_sockets = (("PTGSocketColor", "Input"),)
+    out_socket = ("PTGSocketColor", "Result")
+
+    offset_x: FloatProperty(name="Offset X", default=0.0, min=-1.0, max=1.0, update=_changed)
+    offset_y: FloatProperty(name="Offset Y", default=0.0, min=-1.0, max=1.0, update=_changed)
+    rotation: FloatProperty(name="Rotation", default=0.0, min=-360.0, max=360.0, update=_changed,
+                            description="Seamless in steps of 90 degrees")
+    tiling: IntProperty(name="Tiling", default=1, min=1, max=32, update=_changed)
+
+
 class PTGNodePosterize(PTGNode, Node):
     """Quantize values into flat bands for a painted, cel-like look"""
     bl_idname = "PTGNodePosterize"
@@ -297,7 +398,13 @@ class PTGNodeOutput(PTGNode, Node):
 
 NODE_CLASSES = (
     PTGNodePerlin,
+    PTGNodeVoronoi,
     PTGNodeShape,
+    PTGNodeTile,
+    PTGNodeGradient,
+    PTGNodeBlur,
+    PTGNodeWarp,
+    PTGNodeTransform,
     PTGNodeBlend,
     PTGNodeLevels,
     PTGNodeNormal,

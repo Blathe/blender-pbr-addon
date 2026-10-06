@@ -73,9 +73,13 @@ class PTGCategory(NodeCategory):
 
 
 CATEGORIES = [
-    PTGCategory("PTG_GENERATORS", "Generators", items=[NodeItem("PTGNodePerlin"), NodeItem("PTGNodeShape")]),
+    PTGCategory("PTG_GENERATORS", "Generators", items=[
+        NodeItem("PTGNodePerlin"), NodeItem("PTGNodeVoronoi"), NodeItem("PTGNodeShape"),
+        NodeItem("PTGNodeTile"), NodeItem("PTGNodeGradient"),
+    ]),
     PTGCategory("PTG_FILTERS", "Filters", items=[
-        NodeItem("PTGNodeBlend"), NodeItem("PTGNodeLevels"), NodeItem("PTGNodeGradientMap"), NodeItem("PTGNodeNormal"),
+        NodeItem("PTGNodeBlend"), NodeItem("PTGNodeLevels"), NodeItem("PTGNodeGradientMap"),
+        NodeItem("PTGNodeBlur"), NodeItem("PTGNodeWarp"), NodeItem("PTGNodeTransform"), NodeItem("PTGNodeNormal"),
     ]),
     PTGCategory("PTG_STYLIZED", "Stylized", items=[
         NodeItem("PTGNodeHeightToLight"), NodeItem("PTGNodeEdgeHighlight"), NodeItem("PTGNodePosterize"),
