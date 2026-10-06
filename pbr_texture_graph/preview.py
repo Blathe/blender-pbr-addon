@@ -78,7 +78,34 @@ def _cylinder(bm):
             loop[uv].uv = ((angle / (2 * math.pi) + 0.5) * around, (co.z + 1) / 2)
 
 
-SHAPES = {"SPHERE": _sphere, "CUBE": _cube, "CYLINDER": _cylinder, "PLANE": _plane}
+def _torus(bm, major=1.0, minor=0.45, segments=96, rings=48):
+    """Wraps in both directions with no poles or corners, so a tileable
+    texture shows no seams anywhere."""
+    # Whole tiles around each circle, sized to be roughly square.
+    tiles_v = 2
+    tiles_u = max(1, round(2 * math.pi * major / (2 * math.pi * minor / tiles_v)))
+    grid = []
+    for i in range(segments):
+        a = 2 * math.pi * i / segments
+        row = []
+        for j in range(rings):
+            b = 2 * math.pi * j / rings
+            d = major + minor * math.cos(b)
+            row.append(bm.verts.new((d * math.cos(a), d * math.sin(a), minor * math.sin(b))))
+        grid.append(row)
+    uv = bm.loops.layers.uv.verify()
+    for i in range(segments):
+        for j in range(rings):
+            corners = ((i, j), (i + 1, j), (i + 1, j + 1), (i, j + 1))
+            face = bm.faces.new([grid[a % segments][b % rings] for a, b in corners])
+            face.smooth = True
+            # Unwrapped indices, so the last row reaches exactly 1 instead of 0.
+            for loop, (a, b) in zip(face.loops, corners):
+                loop[uv].uv = (a / segments * tiles_u, b / rings * tiles_v)
+    bm.normal_update()
+
+
+SHAPES = {"TORUS": _torus, "SPHERE": _sphere, "CUBE": _cube, "CYLINDER": _cylinder, "PLANE": _plane}
 
 
 def build_mesh(name, shape):

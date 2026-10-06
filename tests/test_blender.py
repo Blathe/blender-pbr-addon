@@ -259,7 +259,7 @@ def test_export_folder_accepts_blend_relative_paths(tree, recwarn):
     assert not [w for w in recwarn if "blend relative" in str(w.message)]
 
 
-@pytest.mark.parametrize("shape", ["SPHERE", "CUBE", "CYLINDER", "PLANE"])
+@pytest.mark.parametrize("shape", ["TORUS", "SPHERE", "CUBE", "CYLINDER", "PLANE"])
 def test_preview_object_has_material_and_uvs(tree, shape):
     from pbr_texture_graph import preview
 
@@ -309,3 +309,20 @@ def test_preview_shape_and_settings_update_in_place(tree):
         if node.bl_idname == "ShaderNodeTexImage":
             assert node.inputs["Vector"].is_linked
     bpy.data.objects.remove(obj)
+
+
+def test_torus_uvs_wrap_seamlessly(tree):
+    """Where the torus closes on itself, the UVs on both sides differ by
+    whole tiles, so a tileable texture continues without a seam."""
+    from pbr_texture_graph import preview
+
+    mesh = preview.build_mesh("t", "TORUS")
+    uv = np.empty(len(mesh.loops) * 2, dtype=np.float32)
+    mesh.uv_layers.active.data.foreach_get("uv", uv)
+    uv = uv.reshape(-1, 2)
+    per_vert = {}
+    for loop, (u, v) in zip(mesh.loops, uv):
+        per_vert.setdefault(loop.vertex_index, set()).add((round(u % 1.0, 4) % 1.0, round(v % 1.0, 4) % 1.0))
+    assert all(len(values) == 1 for values in per_vert.values())
+    assert len(mesh.vertices) == len(per_vert) and not any(e.use_seam for e in mesh.edges)
+    bpy.data.meshes.remove(mesh)

@@ -68,8 +68,14 @@ class PTGTextureGraph(NodeTree):
     preview_object: PointerProperty(name="Preview Object", type=bpy.types.Object)
     preview_shape: EnumProperty(
         name="Shape",
-        items=[("SPHERE", "Sphere", ""), ("CUBE", "Cube", ""), ("CYLINDER", "Cylinder", ""), ("PLANE", "Plane", "")],
-        default="SPHERE",
+        items=[
+            ("TORUS", "Torus", "Wraps in both directions, so tiling shows no seams anywhere"),
+            ("SPHERE", "Sphere", "No pinching, but tiles meet at angles along some edges"),
+            ("CUBE", "Cube", "One tile per face; edges meeting the top and bottom show seams"),
+            ("CYLINDER", "Cylinder", "Seamless around the side; caps are separate"),
+            ("PLANE", "Plane", "A single flat tile"),
+        ],
+        default="TORUS",
         update=_preview_shape_changed,
     )
     preview_tiling: FloatProperty(name="Tiling", default=1.0, min=0.01, soft_max=16.0, update=_preview_settings_changed,
