@@ -7,7 +7,7 @@ import subprocess
 
 import pytest
 
-from pbr_texture_graph.core.gpu_backend import THUMB_GLSL
+from pbr_texture_graph.core.gpu_backend import COPY_GLSL, THUMB_GLSL
 from pbr_texture_graph.core.ops import GLSL_COMMON, OPS
 
 GLSL_TYPES = {"float": "float", "int": "int", "color": "vec4"}
@@ -25,7 +25,7 @@ def fragment_source(op):
 
 
 @pytest.mark.skipif(VALIDATOR is None, reason="glslangValidator not installed")
-@pytest.mark.parametrize("op_id", sorted(OPS))
+@pytest.mark.parametrize("op_id", sorted(k for k, op in OPS.items() if op.glsl is not None))
 def test_shader_compiles(op_id, tmp_path):
     path = tmp_path / f"{op_id}.frag"
     path.write_text(fragment_source(OPS[op_id]))
@@ -38,5 +38,13 @@ def test_thumbnail_shader_compiles(tmp_path):
     path = tmp_path / "thumb.frag"
     path.write_text("#version 330 core\nuniform ivec2 src_size;\nuniform ivec2 dst_size;\n"
                     "uniform sampler2D src;\nout vec4 fragColor;\n" + THUMB_GLSL)
+    result = subprocess.run([VALIDATOR, str(path)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.skipif(VALIDATOR is None, reason="glslangValidator not installed")
+def test_copy_shader_compiles(tmp_path):
+    path = tmp_path / "copy.frag"
+    path.write_text("#version 330 core\nuniform sampler2D src;\nout vec4 fragColor;\n" + COPY_GLSL)
     result = subprocess.run([VALIDATOR, str(path)], capture_output=True, text=True)
     assert result.returncode == 0, result.stdout + result.stderr

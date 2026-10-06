@@ -53,17 +53,25 @@ Formats are PNG 8-bit (height maps still use 16 bits), PNG 16-bit, or 32-bit Ope
 | Height to Light | Paints directional light and cavity shading into a base color from height |
 | Edge Highlight | Bright painted rims on raised edges |
 | Posterize | Quantizes values into flat bands |
+| Flood Fill | Finds each separate shape in a mask (for example each brick) and stores its bounding box |
+| Flood Fill to Gray | A random gray, a gradient or the size per shape, from a Flood Fill |
+| Flood Fill to Color | A random color per shape, from a Flood Fill |
+| Tile Sampler | Scatters a pattern (or soft discs) on a grid with random position, size, rotation, brightness and dropout |
+| Distance | Soft falloff growing outward from a mask |
+| Bevel | Rounds the edges of shapes in a mask into a height map (linear, round or smooth profile) |
 | Output | Sends its input to a material channel (Base Color, Roughness, Metallic, Normal, Height, AO, Emission) |
 
 ## How it works
 
 Each node is a GLSL fragment shader rendered offscreen at the graph resolution (`core/gpu_backend.py`), with a numpy implementation of the same op (`core/ops.py`) used as the reference in tests and as the fallback when no GPU is available. The evaluator (`core/graph.py`) caches every node's result and re-runs only what changed. Output nodes are written into Blender float images that the generated Principled BSDF material uses.
 
+Flood Fill, Distance and Bevel need whole shapes rather than single pixels, so they run on the CPU even when the graph uses the GPU. Everything downstream of them stays on the GPU.
+
 ## Development
 
 ```
-pip install "bpy==4.5.*" numpy pytest
-python -m pytest tests
+pip install "bpy==4.5.*" numpy pytest moderngl
+xvfb-run -a python -m pytest tests
 ```
 
-The tests run Blender headless, where GPU drawing is unavailable, so they cover the CPU path and the Blender wiring. Shaders are compile-checked with `glslangValidator` when it is installed. The GPU path is verified by hand in Blender.
+The tests run Blender headless, where GPU drawing is unavailable, so they cover the CPU path and the Blender wiring. `tests/test_gpu_parity.py` runs every op's shader on a software OpenGL context through moderngl and compares it with the numpy version; it is skipped without moderngl or a display (Xvfb works). Shaders are also compile-checked with `glslangValidator` when it is installed. Blender's own `gpu` module calls are verified by hand in Blender.

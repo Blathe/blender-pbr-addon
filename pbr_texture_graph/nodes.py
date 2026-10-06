@@ -426,6 +426,118 @@ class PTGNodeEdgeHighlight(PTGNode, Node):
     strength: FloatProperty(name="Strength", default=1.0, min=0.0, max=1.0, update=_changed)
 
 
+class PTGNodeFloodFill(PTGNode, Node):
+    """Find each separate shape in a mask, for per-shape random values and gradients"""
+    bl_idname = "PTGNodeFloodFill"
+    bl_label = "Flood Fill"
+    op_id = "FLOOD_FILL"
+    in_sockets = (("PTGSocketGray", "Mask"),)
+    out_socket = ("PTGSocketColor", "Flood Fill")
+
+    threshold: FloatProperty(name="Threshold", default=0.5, min=0.0, max=1.0, update=_changed,
+                             description="Values above this count as inside a shape")
+
+
+class PTGNodeFloodFillGray(PTGNode, Node):
+    """Per-shape random gray, gradient or size from a Flood Fill"""
+    bl_idname = "PTGNodeFloodFillGray"
+    bl_label = "Flood Fill to Gray"
+    op_id = "FLOOD_FILL_GRAY"
+    enums = {"mode": ["RANDOM", "GRADIENT", "SIZE"]}
+    in_sockets = (("PTGSocketColor", "Flood Fill"),)
+    out_socket = ("PTGSocketGray", "Result")
+
+    mode: EnumProperty(
+        name="Mode",
+        items=[("RANDOM", "Random", "A random gray per shape"),
+               ("GRADIENT", "Gradient", "A gradient across each shape"),
+               ("SIZE", "Size", "Each shape's bounding box size")],
+        update=_changed,
+    )
+    angle: FloatProperty(name="Angle", default=0.0, min=-360.0, max=360.0, update=_changed,
+                         description="Gradient direction in degrees")
+    angle_random: FloatProperty(name="Angle Random", default=0.0, min=0.0, max=1.0, update=_changed,
+                                description="Randomize each shape's gradient direction")
+    seed: IntProperty(name="Seed", default=0, min=0, update=_changed)
+
+    def draw_buttons(self, context, layout):
+        self.draw_thumbnail(layout)
+        layout.prop(self, "mode", text="")
+        if self.mode == "GRADIENT":
+            layout.prop(self, "angle")
+            layout.prop(self, "angle_random")
+        if self.mode != "SIZE":
+            layout.prop(self, "seed")
+
+
+class PTGNodeFloodFillColor(PTGNode, Node):
+    """A random color per shape from a Flood Fill"""
+    bl_idname = "PTGNodeFloodFillColor"
+    bl_label = "Flood Fill to Color"
+    op_id = "FLOOD_FILL_COLOR"
+    in_sockets = (("PTGSocketColor", "Flood Fill"),)
+    out_socket = ("PTGSocketColor", "Color")
+
+    seed: IntProperty(name="Seed", default=0, min=0, update=_changed)
+
+
+class PTGNodeTileSampler(PTGNode, Node):
+    """Scatter a pattern on a grid with random position, size, rotation and brightness"""
+    bl_idname = "PTGNodeTileSampler"
+    bl_label = "Tile Sampler"
+    op_id = "TILE_SAMPLER"
+    in_sockets = (("PTGSocketGray", "Pattern"),)
+    out_socket = ("PTGSocketGray", "Result")
+
+    count_x: IntProperty(name="Count X", default=8, min=1, max=64, update=_changed)
+    count_y: IntProperty(name="Count Y", default=8, min=1, max=64, update=_changed)
+    offset: FloatProperty(name="Row Offset", default=0.0, min=0.0, max=1.0, update=_changed,
+                          description="Shift each row; stays seamless when offset x Count Y is a whole number")
+    scale: FloatProperty(name="Size", default=0.8, min=0.01, max=1.0, update=_changed,
+                         description="Instance size relative to its grid cell")
+    scale_random: FloatProperty(name="Size Random", default=0.0, min=0.0, max=1.0, update=_changed)
+    position_random: FloatProperty(name="Position Random", default=0.0, min=0.0, max=0.5, update=_changed)
+    rotation: FloatProperty(name="Rotation", default=0.0, min=-360.0, max=360.0, update=_changed)
+    rotation_random: FloatProperty(name="Rotation Random", default=0.0, min=0.0, max=1.0, update=_changed)
+    value_random: FloatProperty(name="Value Random", default=0.0, min=0.0, max=1.0, update=_changed,
+                                description="Randomly darken instances")
+    drop: FloatProperty(name="Drop", default=0.0, min=0.0, max=1.0, update=_changed,
+                        description="Fraction of instances randomly left out")
+    seed: IntProperty(name="Seed", default=0, min=0, update=_changed)
+
+
+class PTGNodeDistance(PTGNode, Node):
+    """Grow a soft falloff outward from a mask"""
+    bl_idname = "PTGNodeDistance"
+    bl_label = "Distance"
+    op_id = "DISTANCE"
+    in_sockets = (("PTGSocketGray", "Mask"),)
+    out_socket = ("PTGSocketGray", "Result")
+
+    distance: FloatProperty(name="Distance", default=0.05, min=0.001, max=0.25, precision=3, update=_changed,
+                            description="Falloff length as a fraction of the texture")
+
+
+class PTGNodeBevel(PTGNode, Node):
+    """Round off the edges of shapes in a mask into a height map"""
+    bl_idname = "PTGNodeBevel"
+    bl_label = "Bevel"
+    op_id = "BEVEL"
+    enums = {"profile": ["LINEAR", "ROUND", "SMOOTH"]}
+    in_sockets = (("PTGSocketGray", "Mask"),)
+    out_socket = ("PTGSocketGray", "Height")
+
+    width: FloatProperty(name="Width", default=0.03, min=0.001, max=0.25, precision=3, update=_changed,
+                         description="Bevel width as a fraction of the texture")
+    profile: EnumProperty(
+        name="Profile",
+        items=[("LINEAR", "Linear", "Straight chamfer"), ("ROUND", "Round", "Rounded edge"),
+               ("SMOOTH", "Smooth", "S-curve")],
+        default="ROUND",
+        update=_changed,
+    )
+
+
 CHANNELS = [
     ("BASE_COLOR", "Base Color", ""),
     ("ROUGHNESS", "Roughness", ""),
@@ -471,6 +583,12 @@ NODE_CLASSES = (
     PTGNodePosterize,
     PTGNodeHeightToLight,
     PTGNodeEdgeHighlight,
+    PTGNodeFloodFill,
+    PTGNodeFloodFillGray,
+    PTGNodeFloodFillColor,
+    PTGNodeTileSampler,
+    PTGNodeDistance,
+    PTGNodeBevel,
     PTGNodeOutput,
 )
 

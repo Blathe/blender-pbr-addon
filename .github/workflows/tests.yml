@@ -15,10 +15,12 @@ jobs:
           python-version: "3.11"
       - name: Install dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y glslang-tools
-          pip install "bpy==4.5.*" numpy pytest
+          sudo apt-get update && sudo apt-get install -y glslang-tools xvfb libgl1-mesa-dri
+          pip install "bpy==4.5.*" numpy pytest moderngl
       - name: Run tests
-        run: python -m pytest -q tests
+        # Xvfb gives moderngl a software OpenGL context, so the shaders run
+        # and are compared with the numpy versions (tests/test_gpu_parity.py).
+        run: xvfb-run -a python -m pytest -q -rs tests
       - name: Build extension zip
         run: python scripts/build.py
       - uses: actions/upload-artifact@v4

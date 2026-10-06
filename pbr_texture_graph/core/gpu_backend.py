@@ -8,9 +8,13 @@ import numpy as np
 import gpu
 from gpu_extras.batch import batch_for_shader
 
-from .ops import GLSL_COMMON
+from .ops import GLSL_COMMON, to_rgba
 
 _TYPES = {"float": "FLOAT", "int": "INT", "color": "VEC4"}
+
+COPY_GLSL = """
+void main() { fragColor = texelFetch(src, ivec2(gl_FragCoord.xy), 0); }
+"""
 
 THUMB_GLSL = """
 void main() {
@@ -46,7 +50,6 @@ class GPUBackend:
         self._shaders = {}
         # (w, h) -> reused gpu.types.Buffer for readback
         self._read_buffers = {}
-        self._thumb = None
         self._thumb_targets = {}
         data = gpu.types.Buffer("FLOAT", 4, [0.0, 0.0, 0.0, 1.0])
         self._dummy = gpu.types.GPUTexture((1, 1), format="RGBA32F", data=data)
@@ -71,7 +74,53 @@ class GPUBackend:
         )
         return shader, batch
 
+    def _simple_shader(self, key, source, constants):
+        """Compile (once) a full-screen shader with one sampler named src."""
+        if key not in self._shaders:
+            info = gpu.types.GPUShaderCreateInfo()
+            info.vertex_in(0, "VEC2", "pos")
+            info.fragment_out(0, "VEC4", "fragColor")
+            for kind, name in constants:
+                info.push_constant(kind, name)
+            info.sampler(0, "FLOAT_2D", "src")
+            info.vertex_source("void main() { gl_Position = vec4(pos, 0.0, 1.0); }")
+            info.fragment_source(source)
+            shader = gpu.shader.create_from_info(info)
+            self._shaders[key] = (shader, batch_for_shader(
+                shader, "TRIS",
+                {"pos": ((-1, -1), (1, -1), (1, 1), (-1, 1))},
+                indices=((0, 1, 2), (0, 2, 3)),
+            ))
+        return self._shaders[key]
+
+    def upload(self, array):
+        """Copy an (h, w, c) float array into a new offscreen buffer."""
+        rgba = np.ascontiguousarray(to_rgba(array), dtype=np.float32)
+        h, w = rgba.shape[:2]
+        data = gpu.types.Buffer("FLOAT", w * h * 4)
+        try:
+            np.frombuffer(data, dtype=np.float32)[:] = rgba.ravel()
+        except (TypeError, ValueError, BufferError):
+            data = gpu.types.Buffer("FLOAT", w * h * 4, rgba.ravel().tolist())
+        texture = gpu.types.GPUTexture((w, h), format="RGBA32F", data=data)
+        shader, batch = self._simple_shader("__copy__", COPY_GLSL, ())
+        off = gpu.types.GPUOffScreen(w, h, format="RGBA32F")
+        with off.bind():
+            old_blend = gpu.state.blend_get()
+            gpu.state.blend_set("NONE")
+            shader.bind()
+            set_uniform(shader.uniform_sampler, "src", texture)
+            batch.draw(shader)
+            gpu.state.blend_set(old_blend)
+        return off
+
+    def _run_host(self, op, inputs, params, size):
+        arrays = {name: (self.to_numpy(buf).copy() if buf is not None else None) for name, buf in inputs.items()}
+        return self.upload(op.cpu(arrays, params, size))
+
     def run(self, op, inputs, params, size, kind):
+        if op.glsl is None:
+            return self._run_host(op, inputs, params, size)
         if op.id not in self._shaders:
             self._shaders[op.id] = self._compile(op)
         shader, batch = self._shaders[op.id]
@@ -127,22 +176,7 @@ class GPUBackend:
 
     def thumbnail(self, buf, n):
         """Box-filtered (n, n, 4) float32 copy of a result."""
-        if self._thumb is None:
-            info = gpu.types.GPUShaderCreateInfo()
-            info.vertex_in(0, "VEC2", "pos")
-            info.fragment_out(0, "VEC4", "fragColor")
-            info.push_constant("IVEC2", "src_size")
-            info.push_constant("IVEC2", "dst_size")
-            info.sampler(0, "FLOAT_2D", "src")
-            info.vertex_source("void main() { gl_Position = vec4(pos, 0.0, 1.0); }")
-            info.fragment_source(THUMB_GLSL)
-            shader = gpu.shader.create_from_info(info)
-            self._thumb = (shader, batch_for_shader(
-                shader, "TRIS",
-                {"pos": ((-1, -1), (1, -1), (1, 1), (-1, 1))},
-                indices=((0, 1, 2), (0, 2, 3)),
-            ))
-        shader, batch = self._thumb
+        shader, batch = self._simple_shader("__thumb__", THUMB_GLSL, (("IVEC2", "src_size"), ("IVEC2", "dst_size")))
         off = self._thumb_targets.get(n)
         if off is None:
             off = self._thumb_targets[n] = gpu.types.GPUOffScreen(n, n, format="RGBA32F")

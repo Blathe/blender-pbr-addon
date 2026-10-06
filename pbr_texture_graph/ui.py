@@ -98,7 +98,11 @@ class PTGCategory(NodeCategory):
 CATEGORIES = [
     PTGCategory("PTG_GENERATORS", "Generators", items=[
         NodeItem("PTGNodePerlin"), NodeItem("PTGNodeVoronoi"), NodeItem("PTGNodeShape"),
-        NodeItem("PTGNodeTile"), NodeItem("PTGNodeGradient"),
+        NodeItem("PTGNodeTile"), NodeItem("PTGNodeGradient"), NodeItem("PTGNodeTileSampler"),
+    ]),
+    PTGCategory("PTG_SHAPES", "Shapes", items=[
+        NodeItem("PTGNodeFloodFill"), NodeItem("PTGNodeFloodFillGray"), NodeItem("PTGNodeFloodFillColor"),
+        NodeItem("PTGNodeDistance"), NodeItem("PTGNodeBevel"),
     ]),
     PTGCategory("PTG_FILTERS", "Filters", items=[
         NodeItem("PTGNodeBlend"), NodeItem("PTGNodeLevels"), NodeItem("PTGNodeGradientMap"),

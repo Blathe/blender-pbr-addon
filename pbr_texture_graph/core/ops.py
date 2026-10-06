@@ -37,7 +37,10 @@ class OpDef:
     output: str
     params: list
     cpu: Callable
-    glsl: str
+    # None marks a host op: one that can't be a single fragment pass (for
+    # example flood fill, which needs whole connected regions). The GPU
+    # backend reads its inputs back, runs the numpy version and uploads.
+    glsl: object = None
     defaults: dict = field(default_factory=dict)
 
     def __post_init__(self):
@@ -103,7 +106,10 @@ uint ptg_hash(uint x) {
   x ^= x >> 16u; x *= 0x7feb352du; x ^= x >> 15u; x *= 0x846ca68bu; x ^= x >> 16u;
   return x;
 }
-ivec2 ptg_wrap(ivec2 p) { return ((p % ptg_size) + ptg_size) % ptg_size; }
+// GLSL leaves % undefined for negative operands, so wrap with floor instead.
+ivec2 ptg_mod(ivec2 a, ivec2 n) { return a - n * ivec2(floor(vec2(a) / vec2(n))); }
+int ptg_mod(int a, int n) { return a - n * int(floor(float(a) / float(n))); }
+ivec2 ptg_wrap(ivec2 p) { return ptg_mod(p, ptg_size); }
 float ptg_luma(vec4 c) { return dot(c.rgb, vec3(0.2126, 0.7152, 0.0722)); }
 ivec2 ptg_px() { return ivec2(gl_FragCoord.xy); }
 vec2 ptg_uv() { return (vec2(ptg_px()) + 0.5) / vec2(ptg_size); }
@@ -774,7 +780,7 @@ void main() {
   for (int oy = -1; oy <= 1; oy++) {
     for (int ox = -1; ox <= 1; ox++) {
       ivec2 nc = c + ivec2(ox, oy);
-      ivec2 wc = ((nc % n) + n) % n;
+      ivec2 wc = ptg_mod(nc, ivec2(n));
       uint h1 = ptg_hash(uint(wc.x) + ptg_hash(uint(wc.y) + uint(p_seed)));
       uint h2 = ptg_hash(h1);
       vec2 fp = vec2(nc) + 0.5 + (vec2(float(h1), float(h2)) / 4294967296.0 - 0.5) * p_randomness;
@@ -1024,3 +1030,7 @@ void main() {
 }
 """,
 ))
+
+
+# More nodes live in their own modules; importing them registers their ops.
+from . import ops_layout  # noqa: E402,F401
