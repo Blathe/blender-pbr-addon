@@ -66,11 +66,13 @@ class PTGTextureGraph(NodeTree):
     material: PointerProperty(name="Material", type=bpy.types.Material)
 
     preview_object: PointerProperty(name="Preview Object", type=bpy.types.Object)
+    # Projection-mapped copy of the material, used by the sphere preview.
+    preview_material: PointerProperty(name="Preview Material", type=bpy.types.Material)
     preview_shape: EnumProperty(
         name="Shape",
         items=[
             ("TORUS", "Torus", "Wraps in both directions, so tiling shows no seams anywhere"),
-            ("SPHERE", "Sphere", "No pinching, but tiles meet at angles along some edges"),
+            ("SPHERE", "Sphere", "Projected from three sides instead of UV mapped, so no seams or pinching"),
             ("CUBE", "Cube", "One tile per face; edges meeting the top and bottom show seams"),
             ("CYLINDER", "Cylinder", "Seamless around the side; caps are separate"),
             ("PLANE", "Plane", "A single flat tile"),

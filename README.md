@@ -19,7 +19,7 @@ Status: Phase 2 (MVP) in progress. Targets Blender 4.5 LTS (works on 4.2+).
 
 ## Preview on a model
 
-In the sidebar's **Preview** box, pick a shape (torus, sphere, cube, cylinder or plane; the torus is the only closed shape a tiling texture covers with no seams) and click **Preview on Model**. It adds a preview mesh at the 3D cursor with the graph's material and switches 3D viewports to Material Preview. **Tiling** repeats the texture across the mesh and **Displacement** sets how far the Height output pushes the surface. Both update the material live, and changing the shape swaps the preview mesh in place.
+In the sidebar's **Preview** box, pick a shape (torus, sphere, cube, cylinder or plane; the torus is UV mapped with no seams, and the sphere uses a separate material that projects the maps from three sides, so it has no seams or pinching either) and click **Preview on Model**. It adds a preview mesh at the 3D cursor with the graph's material and switches 3D viewports to Material Preview. **Tiling** repeats the texture across the mesh and **Displacement** sets how far the Height output pushes the surface. Both update the material live, and changing the shape swaps the preview mesh in place.
 
 ## Export
 

@@ -268,7 +268,8 @@ def test_preview_object_has_material_and_uvs(tree, shape):
     obj = preview.preview_object(tree, bpy.context.scene)
     try:
         assert obj.name in bpy.context.scene.objects
-        assert obj.active_material == tree.material
+        expected = tree.preview_material if shape == "SPHERE" else tree.material
+        assert expected is not None and obj.active_material == expected
         assert obj.modifiers["PTG Detail"].subdivision_type == "SIMPLE"
         uv = np.empty(len(obj.data.loops) * 2, dtype=np.float32)
         obj.data.uv_layers.active.data.foreach_get("uv", uv)
@@ -326,3 +327,30 @@ def test_torus_uvs_wrap_seamlessly(tree):
     assert all(len(values) == 1 for values in per_vert.values())
     assert len(mesh.vertices) == len(per_vert) and not any(e.use_seam for e in mesh.edges)
     bpy.data.meshes.remove(mesh)
+
+
+def test_sphere_uses_projected_material(tree):
+    from pbr_texture_graph import preview
+
+    build_material(tree, evaluate.evaluate_tree(tree))
+    tree.preview_shape = "SPHERE"
+    obj = preview.preview_object(tree, bpy.context.scene)
+    mat = obj.active_material
+    assert mat == tree.preview_material and mat != tree.material
+    nodes = mat.node_tree.nodes
+    textures = [n for n in nodes if n.bl_idname == "ShaderNodeTexImage"]
+    assert textures and all(t.projection == "BOX" for t in textures)
+    # Height drives shading through bump; the tangent-space normal map is left out.
+    assert not any(n.bl_idname == "ShaderNodeNormalMap" for n in nodes)
+    assert nodes["Principled BSDF"].inputs["Normal"].links[0].from_node.name == "PTG Bump"
+    coords = nodes["PTG Tiling"].inputs["Vector"].links[0].from_socket
+    assert coords.name == "Object"
+
+    tree.preview_tiling = 2.0
+    assert tuple(nodes["PTG Tiling"].inputs["Scale"].default_value) == (1.0, 1.0, 1.0)
+    tree.preview_displacement = 0.1
+    assert nodes["PTG Bump"].inputs["Distance"].default_value == pytest.approx(0.1)
+
+    tree.preview_shape = "TORUS"
+    assert obj.active_material == tree.material
+    bpy.data.objects.remove(obj)
