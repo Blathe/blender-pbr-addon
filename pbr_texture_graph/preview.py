@@ -39,22 +39,6 @@ def _cube(bm, cuts=15):
 
 
 def _sphere(bm):
-    """A cube pushed out to a sphere: no poles, so tiles don't pinch, and
-    each of the six patches is one undistorted-looking tile."""
-    _cube(bm, cuts=31)
-    for vert in bm.verts:
-        x, y, z = vert.co
-        # Spherified cube mapping, which spaces vertices far more evenly
-        # than normalizing.
-        vert.co = (x * math.sqrt(1 - y * y / 2 - z * z / 2 + y * y * z * z / 3),
-                   y * math.sqrt(1 - z * z / 2 - x * x / 2 + z * z * x * x / 3),
-                   z * math.sqrt(1 - x * x / 2 - y * y / 2 + x * x * y * y / 3))
-    for face in bm.faces:
-        face.smooth = True
-    bm.normal_update()
-
-
-def _uv_sphere(bm):
     uv = bm.loops.layers.uv.verify()  # calc_uvs needs the layer up front
     bmesh.ops.create_uvsphere(bm, u_segments=64, v_segments=32, radius=1.0, calc_uvs=True)
     for face in bm.faces:
@@ -115,7 +99,7 @@ def _torus(bm, major=1.0, minor=0.45, segments=96, rings=48):
     bm.normal_update()
 
 
-SHAPES = {"TORUS": _torus, "SPHERE": _sphere, "UV_SPHERE": _uv_sphere, "CUBE": _cube, "CYLINDER": _cylinder, "PLANE": _plane}
+SHAPES = {"TORUS": _torus, "SPHERE": _sphere, "CUBE": _cube, "CYLINDER": _cylinder, "PLANE": _plane}
 
 
 def build_mesh(name, shape):

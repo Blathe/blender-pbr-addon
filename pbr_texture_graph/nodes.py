@@ -70,8 +70,7 @@ class PTGTextureGraph(NodeTree):
         name="Shape",
         items=[
             ("TORUS", "Torus", "Wraps in both directions, so tiling shows no seams anywhere"),
-            ("SPHERE", "Sphere", "Cube-based: even tiles, seams along the edges that meet the top and bottom"),
-            ("UV_SPHERE", "UV Sphere", "Classic sphere: no seams around the middle, pinches at the poles"),
+            ("SPHERE", "Sphere", "UV sphere: no seams around the middle, pinches at the poles"),
             ("CUBE", "Cube", "One tile per face; edges meeting the top and bottom show seams"),
             ("CYLINDER", "Cylinder", "Seamless around the side; caps are separate"),
             ("PLANE", "Plane", "A single flat tile"),
