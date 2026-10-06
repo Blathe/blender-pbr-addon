@@ -17,6 +17,10 @@ Status: Phase 2 (MVP) in progress. Targets Blender 4.5 LTS (works on 4.2+).
 4. Tweak any node; the material updates live. The sidebar shows how long the last update took and whether it ran on the GPU or CPU.
 5. Every node shows a thumbnail of its result (toggle with **Thumbnails** in the sidebar). Select a node and click **View Active Node** to see it full size in an Image Editor.
 
+## Preview on a model
+
+In the sidebar's **Preview** box, pick a shape (torus, sphere, cube, cylinder or plane). The torus is the only closed shape a tiling texture covers with no seams; the sphere pinches at the poles and click **Preview on Model**. It adds a preview mesh at the 3D cursor with the graph's material and switches 3D viewports to Material Preview. **Tiling** repeats the texture across the mesh and **Displacement** sets how far the Height output pushes the surface. Both update the material live, and changing the shape swaps the preview mesh in place.
+
 ## Export
 
 The sidebar's **Export** box writes the graph's maps as texture files. Pick a preset:

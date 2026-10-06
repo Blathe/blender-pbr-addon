@@ -18,6 +18,16 @@ def _changed(self, context):
 # ---------------------------------------------------------------------------
 # Tree
 
+def _preview_shape_changed(self, context):
+    from . import preview
+    preview.rebuild_shape(self)
+
+
+def _preview_settings_changed(self, context):
+    from .material import apply_preview_settings
+    apply_preview_settings(self)
+
+
 EXPORT_PRESETS = [
     ("SEPARATE", "Separate Maps", "One file per map, OpenGL normals"),
     ("GLTF", "glTF / Godot", "Occlusion, roughness, metallic packed in one ORM file; OpenGL normals"),
@@ -54,6 +64,25 @@ class PTGTextureGraph(NodeTree):
                                   description="Show a preview of each node's result")
     auto_update: BoolProperty(name="Auto Update", default=True, description="Re-evaluate whenever the graph changes")
     material: PointerProperty(name="Material", type=bpy.types.Material)
+
+    preview_object: PointerProperty(name="Preview Object", type=bpy.types.Object)
+    preview_shape: EnumProperty(
+        name="Shape",
+        items=[
+            ("TORUS", "Torus", "Wraps in both directions, so tiling shows no seams anywhere"),
+            ("SPHERE", "Sphere", "UV sphere: no seams around the middle, pinches at the poles"),
+            ("CUBE", "Cube", "One tile per face; edges meeting the top and bottom show seams"),
+            ("CYLINDER", "Cylinder", "Seamless around the side; caps are separate"),
+            ("PLANE", "Plane", "A single flat tile"),
+        ],
+        default="TORUS",
+        update=_preview_shape_changed,
+    )
+    preview_tiling: FloatProperty(name="Tiling", default=1.0, min=0.01, soft_max=16.0, update=_preview_settings_changed,
+                                  description="How many times the texture repeats across each UV tile")
+    preview_displacement: FloatProperty(name="Displacement", default=0.05, min=0.0, soft_max=0.5,
+                                        update=_preview_settings_changed,
+                                        description="Height output displacement strength in the material")
 
     # Export settings, remembered per graph. No update callbacks: changing
     # them must not re-evaluate the graph.

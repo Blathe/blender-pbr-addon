@@ -257,3 +257,72 @@ def test_export_folder_accepts_blend_relative_paths(tree, recwarn):
     tree.export_directory = "//textures/"
     assert tree.export_directory == "//textures/"
     assert not [w for w in recwarn if "blend relative" in str(w.message)]
+
+
+@pytest.mark.parametrize("shape", ["TORUS", "SPHERE", "CUBE", "CYLINDER", "PLANE"])
+def test_preview_object_has_material_and_uvs(tree, shape):
+    from pbr_texture_graph import preview
+
+    build_material(tree, evaluate.evaluate_tree(tree))
+    tree.preview_shape = shape
+    obj = preview.preview_object(tree, bpy.context.scene)
+    try:
+        assert obj.name in bpy.context.scene.objects
+        assert obj.active_material == tree.material
+        assert obj.modifiers["PTG Detail"].subdivision_type == "SIMPLE"
+        uv = np.empty(len(obj.data.loops) * 2, dtype=np.float32)
+        obj.data.uv_layers.active.data.foreach_get("uv", uv)
+        uv = uv.reshape(-1, 2)
+        assert uv.min() >= -1e-5 and uv[:, 0].max() > 0.99 and uv[:, 1].max() > 0.99
+        # No face stretches across a UV seam (cylinder caps are one tile each).
+        for poly in obj.data.polygons:
+            if shape == "CYLINDER" and abs(poly.normal.z) > 0.9:
+                continue
+            span = uv[poly.loop_start:poly.loop_start + poly.loop_total].ptp(axis=0)
+            assert (span < 0.5).all(), poly.index
+    finally:
+        bpy.data.objects.remove(obj)
+
+
+def test_preview_shape_and_settings_update_in_place(tree):
+    from pbr_texture_graph import preview
+
+    mat = build_material(tree, evaluate.evaluate_tree(tree))
+    assert mat.displacement_method == "BOTH"
+    obj = preview.preview_object(tree, bpy.context.scene)
+    old_mesh = obj.data.name
+    tree.preview_shape = "CUBE"
+    assert obj.data.name != old_mesh and old_mesh not in bpy.data.meshes
+    assert obj.active_material == mat
+    # Calling again reuses the same object.
+    assert preview.preview_object(tree, bpy.context.scene) == obj
+
+    tree.preview_tiling = 3.0
+    tree.preview_displacement = 0.2
+    assert tuple(mat.node_tree.nodes["PTG Tiling"].inputs["Scale"].default_value) == (3.0, 3.0, 1.0)
+    assert mat.node_tree.nodes["PTG Displacement"].inputs["Scale"].default_value == pytest.approx(0.2)
+    # Rebuilding the material keeps the settings and every image follows the tiling.
+    build_material(tree, evaluate.evaluate_tree(tree))
+    nodes = mat.node_tree.nodes
+    assert tuple(nodes["PTG Tiling"].inputs["Scale"].default_value) == (3.0, 3.0, 1.0)
+    for node in nodes:
+        if node.bl_idname == "ShaderNodeTexImage":
+            assert node.inputs["Vector"].is_linked
+    bpy.data.objects.remove(obj)
+
+
+def test_torus_uvs_wrap_seamlessly(tree):
+    """Where the torus closes on itself, the UVs on both sides differ by
+    whole tiles, so a tileable texture continues without a seam."""
+    from pbr_texture_graph import preview
+
+    mesh = preview.build_mesh("t", "TORUS")
+    uv = np.empty(len(mesh.loops) * 2, dtype=np.float32)
+    mesh.uv_layers.active.data.foreach_get("uv", uv)
+    uv = uv.reshape(-1, 2)
+    per_vert = {}
+    for loop, (u, v) in zip(mesh.loops, uv):
+        per_vert.setdefault(loop.vertex_index, set()).add((round(u % 1.0, 4) % 1.0, round(v % 1.0, 4) % 1.0))
+    assert all(len(values) == 1 for values in per_vert.values())
+    assert len(mesh.vertices) == len(per_vert) and not any(e.use_seam for e in mesh.edges)
+    bpy.data.meshes.remove(mesh)

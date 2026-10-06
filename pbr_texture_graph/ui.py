@@ -37,6 +37,14 @@ class PTG_PT_graph(Panel):
             layout.label(text=f"Material: {tree.material.name}", icon="MATERIAL")
 
         box = layout.box()
+        box.label(text="Preview", icon="SHADING_TEXTURE")
+        col = box.column()
+        col.prop(tree, "preview_shape")
+        col.prop(tree, "preview_tiling")
+        col.prop(tree, "preview_displacement")
+        box.operator("ptg.preview_on_model", icon="MESH_UVSPHERE")
+
+        box = layout.box()
         box.label(text="Export", icon="EXPORT")
         col = box.column()
         col.prop(tree, "export_preset")
