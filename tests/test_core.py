@@ -218,3 +218,66 @@ def test_cpu_thumbnail_box_filters():
     thumb = CPUBackend().thumbnail(img, 16)
     assert thumb.shape == (16, 16, 4)
     assert np.allclose(thumb[:, :8, 0], 1.0) and np.allclose(thumb[:, 8:, 0], 0.0)
+
+
+@pytest.mark.parametrize("op,params", [
+    ("VORONOI", {"mode": 0}),
+    ("VORONOI", {"mode": 1, "scale": 3}),
+    ("VORONOI", {"mode": 2}),
+    ("VORONOI", {"mode": 3}),
+    ("TILE", {}),
+    ("TILE", {"tiles_x": 3, "tiles_y": 3, "offset": 0.0}),
+    ("GRADIENT", {"mode": 1}),
+    ("GRADIENT", {"mode": 1, "angle": 90.0, "repeat": 2}),
+])
+def test_mvp_generators_tile_and_stay_in_range(op, params):
+    img = run(op, **params)
+    assert img.shape == (64, 64, 1)
+    assert 0.0 <= img.min() and img.max() <= 1.0
+    assert img.std() > 0.01
+    assert seam_ok(img)
+
+
+def test_voronoi_cells_are_flat_regions():
+    cells = run("VORONOI", mode=3, scale=4)
+    assert 2 <= len(np.unique(cells)) <= 16
+
+
+def test_tile_generator_has_gaps_and_varied_heights():
+    img = run("TILE", tiles_x=2, tiles_y=2, offset=0.0, gap=0.2, bevel=0.0, variation=0.8)
+    assert img.min() == 0.0  # the gaps
+    tops = {round(float(img[y, x, 0]), 4) for y, x in ((16, 16), (16, 48), (48, 16), (48, 48))}
+    assert len(tops) > 1
+
+
+def test_gradient_linear_runs_left_to_right():
+    img = run("GRADIENT", mode=0)
+    assert img[0, 0, 0] < img[0, 32, 0] < img[0, 63, 0]
+
+
+def test_blur_keeps_mean_and_smooths():
+    noise = run("PERLIN", octaves=6, scale=16)
+    out = run("BLUR", {"input": noise}, radius=0.05)
+    assert np.isclose(out.mean(), noise.mean(), atol=1e-3)
+    assert out.std() < noise.std()
+    assert seam_ok(out)
+    assert np.array_equal(run("BLUR", {"input": noise}, radius=0.0), noise)
+
+
+def test_warp_with_flat_map_is_identity():
+    noise = run("PERLIN")
+    flat = np.full((64, 64, 1), 0.5, dtype=np.float32)
+    assert np.allclose(run("WARP", {"input": noise, "warp": flat}), noise, atol=1e-5)
+    warped = run("WARP", {"input": noise, "warp": run("PERLIN", seed=3)}, intensity=1.0)
+    assert not np.allclose(warped, noise)
+    assert seam_ok(warped)
+
+
+def test_transform_offset_and_tiling():
+    shape = run("SHAPE", tiling=1)
+    shifted = run("TRANSFORM", {"input": shape}, offset_x=0.5)
+    assert np.allclose(shifted, np.roll(shape, 32, axis=1), atol=1e-5)
+    tiled = run("TRANSFORM", {"input": shape}, tiling=2)
+    assert np.allclose(tiled, run("SHAPE", tiling=2), atol=0.05)
+    turned = run("TRANSFORM", {"input": run("PERLIN")}, rotation=90.0)
+    assert seam_ok(turned)

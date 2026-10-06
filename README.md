@@ -22,7 +22,13 @@ Status: Phase 2 (MVP) in progress. Targets Blender 4.5 LTS (works on 4.2+).
 | Node | What it does |
 | --- | --- |
 | Perlin Noise | Tileable fractal Perlin noise |
+| Voronoi | Tileable cellular noise: distance, second distance, edges or flat cells |
 | Shape | Tiled circle, square or diamond with soft edges |
+| Tile Generator | Bricks or tiles with gaps, bevels and per-tile height variation |
+| Gradient | Linear, mirrored or radial gradient |
+| Blur | Gaussian blur with a resolution-independent radius |
+| Warp | Pushes the input along the slopes of a warp map |
+| Transform | Offset, rotate and tile the input |
 | Blend | Normal, add, multiply, screen, overlay, subtract, darken, lighten, with an optional mask |
 | Levels | Input range, gamma and output range |
 | Gradient Map | Grayscale to color through three stops |
